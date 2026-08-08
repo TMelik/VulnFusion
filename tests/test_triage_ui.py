@@ -1,10 +1,10 @@
 """Tests for the human-triage web UI wrapper (utils/triage_ui.py)."""
 
+import asyncio
 import json
 
+import httpx
 import pytest
-
-from fastapi.testclient import TestClient
 
 from utils.run_folder import create_target_slug
 from utils.finding_annotations import site_bundle_key
@@ -87,9 +87,38 @@ def _write_scan(data_dir, ts="20260101_000000"):
     return ts
 
 
+class _ASGIClient:
+    """Small synchronous facade over HTTPX's network-free ASGI transport."""
+
+    def __init__(self, app):
+        self.app = app
+
+    def request(self, method, path, **kwargs):
+        async def send():
+            transport = httpx.ASGITransport(app=self.app)
+            async with httpx.AsyncClient(
+                transport=transport,
+                base_url="http://testserver",
+            ) as client:
+                return await client.request(method, path, **kwargs)
+
+        return asyncio.run(send())
+
+    def get(self, path, **kwargs):
+        return self.request("GET", path, **kwargs)
+
+    def post(self, path, **kwargs):
+        return self.request("POST", path, **kwargs)
+
+
 def _client(tmp_path):
-    app = triage_ui.create_app(data_dir=tmp_path, main_py=tmp_path / "main.py", token=TOKEN, host="127.0.0.1")
-    return TestClient(app)
+    app = triage_ui.create_app(
+        data_dir=tmp_path,
+        main_py=tmp_path / "main.py",
+        token=TOKEN,
+        host="127.0.0.1",
+    )
+    return _ASGIClient(app)
 
 
 def _auth(extra=None):

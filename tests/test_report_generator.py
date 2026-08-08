@@ -1258,3 +1258,24 @@ def test_report_shows_confirmed_site_risk_context_and_revision():
     assert "Production" in html
     assert "Sensitive data" in html
     assert "Authentication required" in html
+
+
+def test_human_triage_renders_and_escapes_comment():
+    finding = _minimal_finding(human_triage={
+        "status": "false_positive", "scope": "finding", "key": "test vuln::example.com",
+        "reviewer": "tigran", "decided_at": "2026-08-08T10:00:00Z",
+        "comment": "<img src=x onerror=alert(1)> benign note", "revision": 1,
+    })
+    html = generate_html_report(_results(finding))
+    assert "Human triage" in html
+    assert "human-triage-badge-false-positive" in html
+    assert 'data-triage="false_positive"' in html
+    # The attacker-influenced comment is HTML-escaped, not live.
+    assert "&lt;img src=x onerror=alert(1)&gt;" in html
+    assert "<img src=x onerror=alert(1)>" not in html
+
+
+def test_triage_filter_present_and_untriaged_default():
+    html = generate_html_report(_results(_minimal_finding()))
+    assert 'data-filter="triage"' in html
+    assert 'data-triage="none"' in html

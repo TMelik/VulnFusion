@@ -32,6 +32,12 @@ _SITE_CONTEXT_CRITICALITIES = {"high", "medium", "low", "unknown"}
 _SITE_CONTEXT_ENVIRONMENTS = {
     "production", "staging", "development", "test", "unknown"
 }
+# Must mirror schema.HUMAN_TRIAGE_STATUSES / HUMAN_TRIAGE_SCOPES. Kept as local
+# copies to keep this sanitizer self-contained (same pattern as the sets above).
+_HUMAN_TRIAGE_STATUSES = {
+    "confirmed", "false_positive", "not_applicable", "needs_review"
+}
+_HUMAN_TRIAGE_SCOPES = {"finding", "site_vuln"}
 
 _FORBIDDEN_RESULT_KEYS = {
     "asset_criticality",
@@ -222,6 +228,56 @@ def _sanitize_finding_ai_analysis(cleaned: Dict[str, Any]) -> None:
     cleaned.pop("ai_remediation", None)
 
 
+def _sanitize_finding_human_triage(cleaned: Dict[str, Any]) -> None:
+    """Keep only a coherent, bounded public human-triage contract.
+
+    This is a security boundary, not cosmetic: findings are sanitized by
+    *blacklist*, so an un-handled ``human_triage`` (comments are attacker-influenced
+    free text) would otherwise pass through unbounded and unescaped. Rebuild a
+    valid object from whitelisted keys, or drop it entirely — the output must
+    satisfy ``schema._validate_human_triage`` at the final and report stages.
+    """
+    if "human_triage" not in cleaned:
+        return
+    value = cleaned.get("human_triage")
+    if not isinstance(value, dict):
+        cleaned.pop("human_triage", None)
+        return
+
+    status = value.get("status")
+    scope = value.get("scope")
+    key = _safe_ai_text(value.get("key"), limit=512)
+    reviewer = _safe_ai_text(value.get("reviewer"), limit=100)
+    decided_at = _safe_ai_text(value.get("decided_at"), limit=40)
+    if (
+        status not in _HUMAN_TRIAGE_STATUSES
+        or scope not in _HUMAN_TRIAGE_SCOPES
+        or not key
+        or not reviewer
+        or not decided_at.endswith("Z")
+    ):
+        cleaned.pop("human_triage", None)
+        return
+
+    result: Dict[str, Any] = {
+        "status": status,
+        "scope": scope,
+        "key": key,
+        "reviewer": reviewer,
+        "decided_at": decided_at,
+    }
+    comment = _safe_ai_text(value.get("comment"), limit=2000)
+    if comment:
+        result["comment"] = comment
+    updated_at = _safe_ai_text(value.get("updated_at"), limit=40)
+    if updated_at.endswith("Z"):
+        result["updated_at"] = updated_at
+    revision = value.get("revision")
+    if isinstance(revision, int) and not isinstance(revision, bool) and revision >= 1:
+        result["revision"] = revision
+    cleaned["human_triage"] = result
+
+
 def _sanitize_ai_analysis_summary(value: Any) -> Dict[str, Any] | None:
     """Whitelist non-sensitive aggregate LLM analysis diagnostics."""
     if not isinstance(value, dict) or value.get("status") not in _AI_SUMMARY_STATUSES:
@@ -409,6 +465,7 @@ def sanitize_finding_for_export(finding: Any) -> Dict[str, Any] | Any:
 
     cleaned["meta"] = _sanitize_meta(cleaned.get("meta"))
     _sanitize_finding_ai_analysis(cleaned)
+    _sanitize_finding_human_triage(cleaned)
 
     if "correlation" in cleaned:
         correlation = _sanitize_correlation(cleaned.get("correlation"))

@@ -376,3 +376,74 @@ def test_invalid_cvss_version_is_rejected():
 
     assert ok is False
     assert any("meta.cvss_version" in err for err in errs)
+
+
+def _triage(**over) -> dict:
+    triage = {
+        "status": "false_positive", "scope": "finding", "key": "sqli::example.com",
+        "reviewer": "local-user", "decided_at": "2026-08-08T10:00:00Z",
+    }
+    triage.update(over)
+    return triage
+
+
+def test_human_triage_valid_passes():
+    finding = _valid_base()
+    finding["human_triage"] = _triage(comment="server-validated", updated_at="2026-08-08T10:00:00Z", revision=2)
+    ok, errs = validate_finding(finding)
+    assert ok is True, errs
+
+
+def test_human_triage_absent_is_fine():
+    ok, errs = validate_finding(_valid_base())
+    assert ok is True, errs
+
+
+def test_human_triage_invalid_status_fails():
+    finding = _valid_base()
+    finding["human_triage"] = _triage(status="totally_bogus")
+    ok, errs = validate_finding(finding)
+    assert ok is False
+    assert any("human_triage.status" in err for err in errs)
+
+
+def test_human_triage_invalid_scope_fails():
+    finding = _valid_base()
+    finding["human_triage"] = _triage(scope="everything")
+    ok, errs = validate_finding(finding)
+    assert ok is False
+    assert any("human_triage.scope" in err for err in errs)
+
+
+def test_human_triage_missing_required_key_fails():
+    finding = _valid_base()
+    triage = _triage()
+    del triage["reviewer"]
+    finding["human_triage"] = triage
+    ok, errs = validate_finding(finding)
+    assert ok is False
+    assert any("missing required keys" in err for err in errs)
+
+
+def test_human_triage_unexpected_key_fails():
+    finding = _valid_base()
+    finding["human_triage"] = _triage(surprise="x")
+    ok, errs = validate_finding(finding)
+    assert ok is False
+    assert any("unexpected keys" in err for err in errs)
+
+
+def test_human_triage_timestamp_must_end_with_z():
+    finding = _valid_base()
+    finding["human_triage"] = _triage(decided_at="2026-08-08T10:00:00")
+    ok, errs = validate_finding(finding)
+    assert ok is False
+    assert any("decided_at" in err for err in errs)
+
+
+def test_human_triage_comment_over_limit_fails():
+    finding = _valid_base()
+    finding["human_triage"] = _triage(comment="A" * 2001)
+    ok, errs = validate_finding(finding)
+    assert ok is False
+    assert any("human_triage.comment" in err for err in errs)

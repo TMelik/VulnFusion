@@ -37,6 +37,7 @@ from utils.defectdojo_raw import (
     resolve_raw_scan_type,
 )
 from utils.export_sanitizer import sanitize_results_for_export
+from utils.finding_annotations import apply_annotations
 from utils.schema import SEVERITY_LEVELS, SCHEMA_VERSION, assert_valid_results
 from utils.comparator import add_comparison_to_results, print_comparison_summary
 from utils.report_generator import generate_html_report
@@ -1579,6 +1580,50 @@ def main():
         )
         parser.set_defaults(report=None)
 
+        annotation_group = parser.add_mutually_exclusive_group()
+        annotation_group.add_argument(
+            '--apply-annotations',
+            dest='apply_annotations',
+            action='store_true',
+            help='Re-attach saved human triage decisions (false positive / not applicable / '
+                 'comments) from the per-site OKF bundle to matching findings (default: enabled)'
+        )
+        annotation_group.add_argument(
+            '--no-apply-annotations',
+            dest='apply_annotations',
+            action='store_false',
+            help='Do not re-attach saved human triage decisions for this run'
+        )
+        parser.set_defaults(apply_annotations=True)
+
+        ui_group = parser.add_argument_group('web UI (human triage)')
+        ui_group.add_argument(
+            '--ui',
+            action='store_true',
+            help='Launch the local human-triage web UI (a wrapper over this CLI) instead of scanning'
+        )
+        ui_group.add_argument(
+            '--ui-host',
+            default='127.0.0.1',
+            help='Host/interface for --ui (default: 127.0.0.1, loopback only)'
+        )
+        ui_group.add_argument(
+            '--ui-port',
+            type=int,
+            default=8765,
+            help='Port for --ui (default: 8765; use 0 to pick a free port)'
+        )
+        ui_group.add_argument(
+            '--ui-reviewer',
+            default=None,
+            help='Reviewer id recorded on triage decisions made via --ui (default: local-user)'
+        )
+        ui_group.add_argument(
+            '--allow-remote',
+            action='store_true',
+            help='Permit --ui to bind a non-loopback host (exposes scan control to the network)'
+        )
+
         parser.add_argument(
             '--merge-by-host',
             action='store_true',
@@ -1945,6 +1990,18 @@ def main():
             print("\nHTTP/2 Compatibility Adapters:")
             print("-" * 40)
             print("  bridge: Available")
+            return 0
+
+        if getattr(args, 'ui', False):
+            from utils.triage_ui import serve
+            serve(
+                data_dir=data_dir,
+                main_py=Path(__file__).resolve(),
+                host=args.ui_host,
+                port=args.ui_port,
+                reviewer=args.ui_reviewer,
+                allow_remote=args.allow_remote,
+            )
             return 0
 
         if not args.target:
@@ -2452,6 +2509,11 @@ def main():
                         f"unavailable={ai_summary.get('unavailable_count', 0)}.",
                         file=ai_log_stream,
                     )
+            # Re-attach saved human triage decisions before sanitize so future
+            # scans reflect prior analyst judgements. Read-only on the store and
+            # a no-op when the per-site bundle has no annotations.
+            if getattr(args, 'apply_annotations', True):
+                results = apply_annotations(results, data_dir=data_dir)
             results = sanitize_results_for_export(results)
             ai_metrics_path = _save_ai_analysis_metrics(
                 getattr(orchestrator, 'current_run_folder', None),

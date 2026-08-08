@@ -621,6 +621,86 @@ def _render_ai_advisory(finding: Dict[str, Any]) -> str:
     '''
 
 
+_HUMAN_TRIAGE_LABELS = {
+    'confirmed': 'Confirmed',
+    'false_positive': 'False positive',
+    'not_applicable': 'Not applicable',
+    'needs_review': 'Needs review',
+}
+
+
+def _human_triage_status(finding: Dict[str, Any]) -> str:
+    """Return the normalized human triage status, or '' when absent/invalid."""
+    triage = finding.get('human_triage')
+    if isinstance(triage, dict):
+        status = str(triage.get('status') or '')
+        if status in _HUMAN_TRIAGE_LABELS:
+            return status
+    return ''
+
+
+def _render_human_triage_badge(finding: Dict[str, Any]) -> str:
+    """Compact triage badge for the finding header; '' when untriaged."""
+    status = _human_triage_status(finding)
+    if not status:
+        return ''
+    css = status.replace('_', '-')
+    return (
+        f'<span class="badge human-triage-badge human-triage-badge-{css}">'
+        f'{escape(_HUMAN_TRIAGE_LABELS[status])}</span>'
+    )
+
+
+def _render_human_triage(finding: Dict[str, Any]) -> str:
+    """Render the human triage decision.
+
+    A human judgement is authoritative: it renders above the advisory AI block
+    and, on conflict, notes that it overrides the AI. Every interpolated value
+    is escaped — the free-text comment is attacker-influenced.
+    """
+    status = _human_triage_status(finding)
+    if not status:
+        return ''
+    triage = finding.get('human_triage')
+    if not isinstance(triage, dict):
+        return ''
+    comment = escape(str(triage.get('comment') or '').strip())
+    reviewer = escape(str(triage.get('reviewer') or '').strip())
+    decided_at = escape(str(triage.get('updated_at') or triage.get('decided_at') or '').strip())
+    scope_labels = {'finding': 'this finding', 'site_vuln': 'this vulnerability on this site'}
+    scope = scope_labels.get(str(triage.get('scope') or ''), '')
+
+    override_note = ''
+    ai_status = str(finding.get('ai_analysis_status') or '').strip().lower()
+    if ai_status in {'completed', 'cached'} and isinstance(finding.get('applicability'), dict):
+        override_note = (
+            '<div class="human-triage-override">Human decision overrides the advisory AI analysis below.</div>'
+        )
+
+    meta_bits = []
+    if reviewer:
+        meta_bits.append(f'by <strong>{reviewer}</strong>')
+    if decided_at:
+        meta_bits.append(f'on {decided_at}')
+    if scope:
+        meta_bits.append(f'scope: {scope}')
+    meta_html = f'<div class="human-triage-meta">{" · ".join(meta_bits)}</div>' if meta_bits else ''
+
+    css = status.replace('_', '-')
+    return f'''
+        <div class="human-triage human-triage-{css}">
+            <div class="human-triage-header">
+                <div class="human-triage-title">Human triage</div>
+                <span class="badge human-triage-badge human-triage-badge-{css}">{escape(_HUMAN_TRIAGE_LABELS[status])}</span>
+            </div>
+            {f'<p class="human-triage-comment">{comment}</p>' if comment else ''}
+            {meta_html}
+            {override_note}
+            <div class="human-triage-limit">Recorded by a human reviewer — persisted to the site knowledge base and re-applied on future scans.</div>
+        </div>
+    '''
+
+
 def _render_ai_analysis_summary(results: Dict[str, Any]) -> str:
     """Render bounded run-level diagnostics without provider payloads or secrets."""
     summary = results.get('ai_analysis_summary')
@@ -1268,6 +1348,9 @@ def generate_modern_html_report(results: Dict[str, Any]) -> str:
         render_scanner_native_top_level = not bool(source_evidence_html)
         correlation_html = _render_correlation(finding)
         ai_advisory_html = _render_ai_advisory(finding)
+        human_triage_html = _render_human_triage(finding)
+        triage_status = _human_triage_status(finding)
+        triage_badge = _render_human_triage_badge(finding)
         finding_scanners = _collect_finding_scanners(finding)
         scanner_provenance = ", ".join(finding_scanners) if finding_scanners else "unknown"
 
@@ -1325,6 +1408,7 @@ def generate_modern_html_report(results: Dict[str, Any]) -> str:
              data-severity="{severity}"
              data-priority="{escape(priority.lower()) if priority else ''}"
              data-status="{status}"
+             data-triage="{triage_status or 'none'}"
              style="--delay: {idx * 0.05}s; animation-delay: {idx * 0.05}s;">
             <div class="finding-header">
                 <div class="finding-title-wrapper">
@@ -1333,6 +1417,7 @@ def generate_modern_html_report(results: Dict[str, Any]) -> str:
                 </div>
                 <div class="finding-badges">
                     {status_badge}
+                    {triage_badge}
                     {priority_badge}
                     {risk_score_badge}
                     <span class="badge severity-badge" style="background: {severity_color};">{severity.upper()}</span>
@@ -1355,6 +1440,7 @@ def generate_modern_html_report(results: Dict[str, Any]) -> str:
                 {f'<div class="finding-impact"><strong>Impact:</strong><p>{impact}</p></div>' if render_scanner_native_top_level and impact else ''}
                 {f'<div class="finding-remediation"><strong>Remediation:</strong><p>{remediation}</p></div>' if render_scanner_native_top_level and remediation else ''}
                 {correlation_html}
+                {human_triage_html}
                 {ai_advisory_html}
                 {merge_summary_html}
                 {source_evidence_html}
@@ -1373,6 +1459,7 @@ def generate_modern_html_report(results: Dict[str, Any]) -> str:
             finding_scanners = _collect_finding_scanners(finding)
             scanner_provenance = ", ".join(finding_scanners) if finding_scanners else "unknown"
             correlation_html = _render_correlation(finding)
+            human_triage_html = _render_human_triage(finding)
 
             severity_color = _get_severity_color(severity)
             changed_color = "#f97316"
@@ -1409,6 +1496,7 @@ def generate_modern_html_report(results: Dict[str, Any]) -> str:
                     </div>
                     <div class="finding-provenance">Found by: {escape(scanner_provenance)}</div>
                     {correlation_html}
+                    {human_triage_html}
                     <div class="changes-section">
                         <div class="changes-header">⚠️ Changes Detected</div>
                         {changes_html}
@@ -2513,6 +2601,80 @@ def generate_modern_html_report(results: Dict[str, Any]) -> str:
             font-size: 0.8rem;
         }}
 
+        .human-triage {{
+            margin: 1rem 0;
+            padding: 1rem;
+            border: 1px solid rgba(139, 92, 246, 0.4);
+            border-left: 3px solid #8b5cf6;
+            border-radius: 0.625rem;
+            background: rgba(139, 92, 246, 0.08);
+        }}
+
+        .human-triage-false-positive,
+        .human-triage-not-applicable {{
+            border-color: rgba(148, 163, 184, 0.45);
+            border-left-color: #94a3b8;
+            background: rgba(148, 163, 184, 0.10);
+        }}
+
+        .human-triage-confirmed {{
+            border-color: rgba(239, 68, 68, 0.45);
+            border-left-color: #ef4444;
+            background: rgba(239, 68, 68, 0.08);
+        }}
+
+        .human-triage-header {{
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 0.75rem;
+            flex-wrap: wrap;
+        }}
+
+        .human-triage-title {{
+            color: var(--text-primary);
+            font-weight: 700;
+        }}
+
+        .human-triage-comment {{
+            margin-top: 0.75rem;
+            color: var(--text-secondary);
+            white-space: pre-wrap;
+        }}
+
+        .human-triage-meta,
+        .human-triage-override {{
+            margin-top: 0.6rem;
+            color: var(--text-muted);
+            font-size: 0.85rem;
+        }}
+
+        .human-triage-override {{
+            font-weight: 600;
+            color: #8b5cf6;
+        }}
+
+        .human-triage-limit {{
+            margin-top: 0.75rem;
+            color: var(--text-muted);
+            font-size: 0.8rem;
+        }}
+
+        .human-triage-badge {{
+            background: var(--bg-tertiary);
+            color: var(--text-primary);
+            border: 1px solid var(--border);
+        }}
+
+        .human-triage-badge-false-positive,
+        .human-triage-badge-not-applicable {{
+            background: rgba(148, 163, 184, 0.20);
+        }}
+
+        .human-triage-badge-confirmed {{
+            background: rgba(239, 68, 68, 0.20);
+        }}
+
         .confirmed-risk-context {{
             margin-top: 1rem;
             padding: 0.875rem;
@@ -3211,6 +3373,17 @@ def generate_modern_html_report(results: Dict[str, Any]) -> str:
                             <button class="filter-btn" data-filter="status" data-value="fixed">Fixed</button>
                         </div>
                     </div>
+                    <div class="filter-set">
+                        <span class="filter-label">Triage</span>
+                        <div class="filter-group" id="triageFilters" aria-label="Human triage filters">
+                            <button class="filter-btn active" data-filter="triage" data-value="all">All</button>
+                            <button class="filter-btn" data-filter="triage" data-value="confirmed">Confirmed</button>
+                            <button class="filter-btn" data-filter="triage" data-value="false_positive">False positive</button>
+                            <button class="filter-btn" data-filter="triage" data-value="not_applicable">Not applicable</button>
+                            <button class="filter-btn" data-filter="triage" data-value="needs_review">Triage: uncertain</button>
+                            <button class="filter-btn" data-filter="triage" data-value="none">Untriaged</button>
+                        </div>
+                    </div>
                     <button class="clear-filters" id="clearFilters">Clear filters</button>
                 </div>
             </div>
@@ -3311,12 +3484,14 @@ const emptyClearFiltersBtn = document.getElementById('emptyClearFilters');
 let activeFilters = {{
     severity: 'all',
     status: 'all',
+    triage: 'all',
     search: ''
 }};
 
 function hasActiveFilters() {{
     return activeFilters.severity !== 'all'
         || activeFilters.status !== 'all'
+        || activeFilters.triage !== 'all'
         || activeFilters.search.trim() !== '';
 }}
 
@@ -3333,13 +3508,15 @@ function applyFilters() {{
     findingCards.forEach(card => {{
         const severity = card.dataset.severity?.toLowerCase() || '';
         const status = card.dataset.status?.toLowerCase() || '';
+        const triage = card.dataset.triage?.toLowerCase() || '';
         const text = card.textContent.toLowerCase();
 
         const severityMatch = activeFilters.severity === 'all' || severity === activeFilters.severity;
         const statusMatch = activeFilters.status === 'all' || status === activeFilters.status;
+        const triageMatch = activeFilters.triage === 'all' || triage === activeFilters.triage;
         const searchMatch = !activeFilters.search || text.includes(activeFilters.search.toLowerCase());
 
-        const shouldShow = severityMatch && statusMatch && searchMatch;
+        const shouldShow = severityMatch && statusMatch && triageMatch && searchMatch;
         card.classList.toggle('hidden', !shouldShow);
 
         if (shouldShow) visibleCount++;
@@ -3373,7 +3550,7 @@ filterBtns.forEach(btn => {{
 }});
 
 function clearFilters() {{
-    activeFilters = {{ severity: 'all', status: 'all', search: '' }};
+    activeFilters = {{ severity: 'all', status: 'all', triage: 'all', search: '' }};
     searchInput.value = '';
     syncFilterButtons();
     applyFilters();

@@ -1,5 +1,6 @@
 from utils.export_sanitizer import (
     iter_forbidden_export_fields,
+    sanitize_finding_for_export,
     sanitize_results_for_export,
 )
 
@@ -347,3 +348,44 @@ def test_sanitize_results_whitelists_public_site_context_and_drops_local_paths()
             "evidence_ids": ["page-1"],
         },
     }
+
+
+def _triage_finding(triage):
+    return {
+        "vulnerability_name": "SQL Injection", "severity": "high",
+        "asset_id": "https://example.com/login", "description": "d", "remediation": "r",
+        "meta": {"host": "example.com"}, "human_triage": triage,
+    }
+
+
+def test_sanitize_keeps_valid_human_triage():
+    out = sanitize_finding_for_export(_triage_finding({
+        "status": "false_positive", "scope": "finding", "key": "k::example.com",
+        "reviewer": "local-user", "decided_at": "2026-08-08T10:00:00Z",
+        "comment": "server-validated", "revision": 1,
+    }))
+    assert out["human_triage"]["status"] == "false_positive"
+    assert out["human_triage"]["comment"] == "server-validated"
+
+
+def test_sanitize_drops_malformed_human_triage():
+    out = sanitize_finding_for_export(_triage_finding({
+        "status": "bogus", "scope": "finding", "key": "k",
+        "reviewer": "u", "decided_at": "2026-08-08T10:00:00Z",
+    }))
+    assert "human_triage" not in out
+
+
+def test_sanitize_bounds_lengths_and_strips_extra_keys():
+    out = sanitize_finding_for_export(_triage_finding({
+        "status": "confirmed", "scope": "site_vuln", "key": "z" * 600, "reviewer": "u" * 200,
+        "decided_at": "2026-08-08T10:00:00Z", "comment": "c" * 5000, "revision": 4, "bogus": "drop me",
+    }))
+    triage = out["human_triage"]
+    assert set(triage).issubset(
+        {"status", "scope", "key", "reviewer", "decided_at", "comment", "updated_at", "revision"}
+    )
+    assert len(triage["key"]) <= 512
+    assert len(triage["reviewer"]) <= 100
+    assert len(triage["comment"]) <= 2000
+    assert "bogus" not in triage

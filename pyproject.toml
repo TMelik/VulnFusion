@@ -5,6 +5,7 @@ description = "Production-oriented vulnerability scanning pipeline with scanner-
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+    "fastapi>=0.141.1",
     "httpx[http2]>=0.27.0",
     "python-dotenv>=1.0.0",
     "pyyaml>=6.0",

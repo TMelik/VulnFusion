@@ -19,6 +19,17 @@ APPLICABILITY_STATUSES = [
     'needs_review',
 ]
 
+# Human triage: a definitive analyst decision recorded on a finding and
+# persisted to the per-site OKF knowledge bundle. Deliberately distinct from
+# the advisory (AI) applicability contract above — human words are unhedged.
+HUMAN_TRIAGE_STATUSES = [
+    'confirmed',
+    'false_positive',
+    'not_applicable',
+    'needs_review',
+]
+HUMAN_TRIAGE_SCOPES = ['finding', 'site_vuln']
+
 # Valid match_level values produced by deduplicator._merge_group()
 _MATCH_LEVELS = {'strict', 'general', 'host_only', 'single'}
 
@@ -643,6 +654,61 @@ def _validate_ai_analysis(errors: List[str], finding: Dict[str, Any]) -> None:
                     )
 
 
+def _validate_human_triage(errors: List[str], finding: Dict[str, Any]) -> None:
+    """Validate the human triage contract when present.
+
+    A definitive analyst decision persisted to the per-site OKF bundle and
+    re-attached to findings on later scans. Distinct from the advisory AI
+    ``applicability`` contract: no confidence/evidence, and human words win.
+    """
+    if 'human_triage' not in finding:
+        return
+    triage = finding.get('human_triage')
+    if not isinstance(triage, dict):
+        errors.append(
+            "'human_triage' must be an object, got " + type(triage).__name__
+        )
+        return
+
+    required = {'status', 'scope', 'key', 'reviewer', 'decided_at'}
+    optional = {'comment', 'updated_at', 'revision'}
+    keys = set(triage)
+    missing = required - keys
+    if missing:
+        errors.append("'human_triage' missing required keys: " + ", ".join(sorted(missing)))
+    extra = keys - required - optional
+    if extra:
+        errors.append("'human_triage' has unexpected keys: " + ", ".join(sorted(extra)))
+
+    if triage.get('status') not in HUMAN_TRIAGE_STATUSES:
+        errors.append("human_triage.status must be one of: " + ", ".join(HUMAN_TRIAGE_STATUSES))
+    if triage.get('scope') not in HUMAN_TRIAGE_SCOPES:
+        errors.append("human_triage.scope must be one of: " + ", ".join(HUMAN_TRIAGE_SCOPES))
+
+    key = triage.get('key')
+    if not isinstance(key, str) or not key.strip() or len(key) > 512:
+        errors.append("human_triage.key must be a non-empty string of at most 512 chars")
+    reviewer = triage.get('reviewer')
+    if not isinstance(reviewer, str) or not reviewer.strip() or len(reviewer) > 100:
+        errors.append("human_triage.reviewer must be a non-empty string of at most 100 chars")
+
+    for ts_field in ('decided_at', 'updated_at'):
+        if ts_field not in triage:
+            continue
+        ts = triage.get(ts_field)
+        if not isinstance(ts, str) or not ts.endswith('Z'):
+            errors.append(f"human_triage.{ts_field} must be an ISO-8601 UTC string ending in 'Z'")
+
+    if 'comment' in triage:
+        comment = triage.get('comment')
+        if not isinstance(comment, str) or len(comment) > 2000:
+            errors.append("human_triage.comment must be a string of at most 2000 chars")
+    if 'revision' in triage:
+        revision = triage.get('revision')
+        if isinstance(revision, bool) or not isinstance(revision, int) or revision < 1:
+            errors.append("human_triage.revision must be an int >= 1")
+
+
 # ---------------------------------------------------------------------------
 # Public validator
 # ---------------------------------------------------------------------------
@@ -712,6 +778,7 @@ def validate_finding(finding: Dict[str, Any]) -> tuple[bool, List[str]]:
         _check_optional_str(errors, finding, fp_field)
     _validate_source_findings(errors, finding)
     _validate_ai_analysis(errors, finding)
+    _validate_human_triage(errors, finding)
 
     # ------------------------------------------------------------------
     # D. Optional deduplication + scoring / prioritization fields

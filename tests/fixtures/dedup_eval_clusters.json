@@ -1,0 +1,468 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "case_id": "cluster_three_scanners_same_issue",
+      "bucket": "deterministic",
+      "case_tags": ["cluster"],
+      "description": "Three scanners report the same header family on the same endpoint.",
+      "expected_mode": "deterministic",
+      "expected_merge_count": 1,
+      "expected_groups": [["cluster-det-a", "cluster-det-b", "cluster-det-c"]],
+      "findings": [
+        {
+          "finding_id": "cluster-det-a",
+          "vulnerability_name": "CSP Header Missing",
+          "severity": "medium",
+          "asset_id": "https://example.com/login",
+          "description": "Missing CSP header on the login endpoint.",
+          "remediation": "Set the header.",
+          "meta": {
+            "scanner": "zap",
+            "host": "example.com",
+            "scheme": "https",
+            "port": 443,
+            "path": "/login",
+            "parameter": "",
+            "method": "GET",
+            "protocol": "",
+            "query_keys": [],
+            "raw_id": "zap-cluster-csp"
+          }
+        },
+        {
+          "finding_id": "cluster-det-b",
+          "vulnerability_name": "Content Security Policy Configuration",
+          "severity": "low",
+          "asset_id": "https://example.com/login",
+          "description": "The same endpoint is missing the CSP protection.",
+          "remediation": "Set the header.",
+          "meta": {
+            "scanner": "nuclei",
+            "host": "example.com",
+            "scheme": "https",
+            "port": 443,
+            "path": "/login",
+            "parameter": "",
+            "method": "GET",
+            "protocol": "",
+            "query_keys": [],
+            "raw_id": "nuclei-cluster-csp"
+          }
+        },
+        {
+          "finding_id": "cluster-det-c",
+          "vulnerability_name": "Suggested security header missing: content-security-policy.",
+          "severity": "low",
+          "asset_id": "https://example.com/login",
+          "description": "Nikto also flagged the missing CSP header.",
+          "remediation": "Set the header.",
+          "meta": {
+            "scanner": "nikto",
+            "host": "example.com",
+            "scheme": "https",
+            "port": 443,
+            "path": "/login",
+            "parameter": "",
+            "method": "GET",
+            "protocol": "",
+            "query_keys": [],
+            "raw_id": "nikto-cluster-csp"
+          }
+        }
+      ]
+    },
+    {
+      "case_id": "cluster_same_scanner_premerge_then_gray_zone_join",
+      "bucket": "gray_zone",
+      "case_tags": ["cluster"],
+      "description": "Two same-scanner exact duplicates should premerge before one gray-zone cross-scanner join.",
+      "expected_mode": "hybrid",
+      "expected_merge_count": 1,
+      "expected_groups": [["cluster-hybrid-a", "cluster-hybrid-b", "cluster-hybrid-c"]],
+      "findings": [
+        {
+          "finding_id": "cluster-hybrid-a",
+          "vulnerability_name": "SQL Injection in search parameter",
+          "severity": "medium",
+          "asset_id": "https://example.com/login?q=1",
+          "description": "Repeated scanner record for the search parameter.",
+          "remediation": "Use parameterized queries.",
+          "meta": {
+            "scanner": "zap",
+            "host": "example.com",
+            "scheme": "https",
+            "port": 443,
+            "path": "/login",
+            "parameter": "q",
+            "method": "GET",
+            "protocol": "",
+            "query_keys": ["q"],
+            "raw_id": "zap-hybrid-q",
+            "category": "SQL Injection"
+          }
+        },
+        {
+          "finding_id": "cluster-hybrid-b",
+          "vulnerability_name": "SQL Injection in search parameter",
+          "severity": "medium",
+          "asset_id": "https://example.com/login?q=1",
+          "description": "Repeated scanner record for the search parameter.",
+          "remediation": "Use parameterized queries.",
+          "meta": {
+            "scanner": "zap",
+            "host": "example.com",
+            "scheme": "https",
+            "port": 443,
+            "path": "/login",
+            "parameter": "q",
+            "method": "GET",
+            "protocol": "",
+            "query_keys": ["q"],
+            "raw_id": "zap-hybrid-q",
+            "category": "SQL Injection"
+          }
+        },
+        {
+          "finding_id": "cluster-hybrid-c",
+          "vulnerability_name": "SQL Injection",
+          "severity": "medium",
+          "asset_id": "https://example.com/login?account=2",
+          "description": "Generic SQL injection finding on a nearby login input.",
+          "remediation": "Use parameterized queries.",
+          "meta": {
+            "scanner": "nuclei",
+            "host": "example.com",
+            "scheme": "https",
+            "port": 443,
+            "path": "/login",
+            "parameter": "account",
+            "method": "GET",
+            "protocol": "",
+            "query_keys": ["account"],
+            "raw_id": "nuclei-hybrid-account",
+            "category": "SQL Injection"
+          }
+        }
+      ]
+    },
+    {
+      "case_id": "cluster_with_nearby_distinct_finding_stays_separate",
+      "bucket": "gray_zone",
+      "case_tags": ["cluster"],
+      "description": "Three ambiguous anti-framing findings should cluster while a nearby CSP finding stays separate.",
+      "expected_mode": "llm",
+      "expected_merge_count": 1,
+      "expected_groups": [["cluster-frame-a", "cluster-frame-b", "cluster-frame-c"], ["cluster-frame-d"]],
+      "findings": [
+        {
+          "finding_id": "cluster-frame-a",
+          "vulnerability_name": "Clickjacking policy check",
+          "severity": "low",
+          "asset_id": "https://example.com/login",
+          "description": "Login page may not enforce anti-framing controls.",
+          "remediation": "Review browser security controls.",
+          "meta": {
+            "scanner": "zap",
+            "host": "example.com",
+            "scheme": "https",
+            "port": 443,
+            "path": "/login",
+            "parameter": "",
+            "method": "GET",
+            "protocol": "",
+            "query_keys": [],
+            "raw_id": "zap-cluster-frame",
+            "category": "Browser Security"
+          }
+        },
+        {
+          "finding_id": "cluster-frame-b",
+          "vulnerability_name": "Framing protections review",
+          "severity": "low",
+          "asset_id": "https://example.com/login",
+          "description": "Template flagged potentially missing anti-framing controls.",
+          "remediation": "Review browser security controls.",
+          "meta": {
+            "scanner": "nuclei",
+            "host": "example.com",
+            "scheme": "https",
+            "port": 443,
+            "path": "/login",
+            "parameter": "",
+            "method": "GET",
+            "protocol": "",
+            "query_keys": [],
+            "raw_id": "nuclei-cluster-frame",
+            "category": "Browser Security"
+          }
+        },
+        {
+          "finding_id": "cluster-frame-c",
+          "vulnerability_name": "Browser anti-framing guidance",
+          "severity": "low",
+          "asset_id": "https://example.com/login",
+          "description": "Nikto noted missing browser anti-framing protections on the login page.",
+          "remediation": "Review browser security controls.",
+          "meta": {
+            "scanner": "nikto",
+            "host": "example.com",
+            "scheme": "https",
+            "port": 443,
+            "path": "/login",
+            "parameter": "",
+            "method": "GET",
+            "protocol": "",
+            "query_keys": [],
+            "raw_id": "nikto-cluster-frame",
+            "category": "Browser Security"
+          }
+        },
+        {
+          "finding_id": "cluster-frame-d",
+          "vulnerability_name": "CSP Header Missing",
+          "severity": "low",
+          "asset_id": "https://example.com/login",
+          "description": "Missing CSP header.",
+          "remediation": "Set the correct header.",
+          "meta": {
+            "scanner": "wapiti",
+            "host": "example.com",
+            "scheme": "https",
+            "port": 443,
+            "path": "/login",
+            "parameter": "",
+            "method": "GET",
+            "protocol": "",
+            "query_keys": [],
+            "raw_id": "wapiti-cluster-csp"
+          }
+        }
+      ]
+    },
+    {
+      "case_id": "cluster_partial_overlap_nearby_d_must_not_absorb",
+      "bucket": "gray_zone",
+      "case_tags": ["cluster"],
+      "description": "A, B, and C are one gray-zone SQLi cluster while a nearby D must stay out of it.",
+      "expected_mode": "llm",
+      "expected_merge_count": 1,
+      "expected_groups": [["cluster-overlap-a", "cluster-overlap-b", "cluster-overlap-c"], ["cluster-overlap-d"]],
+      "findings": [
+        {
+          "finding_id": "cluster-overlap-a",
+          "vulnerability_name": "SQL Injection in search parameter",
+          "severity": "medium",
+          "asset_id": "https://example.com/search?q=1",
+          "description": "The search page may be injectable.",
+          "remediation": "Use parameterized queries.",
+          "meta": {
+            "scanner": "zap",
+            "host": "example.com",
+            "scheme": "https",
+            "port": 443,
+            "path": "/search",
+            "parameter": "q",
+            "method": "GET",
+            "protocol": "",
+            "query_keys": ["q"],
+            "raw_id": "zap-cluster-search-q",
+            "category": "SQL Injection"
+          }
+        },
+        {
+          "finding_id": "cluster-overlap-b",
+          "vulnerability_name": "SQL Injection",
+          "severity": "medium",
+          "asset_id": "https://example.com/search?query=1",
+          "description": "Generic SQL injection finding on a nearby search input.",
+          "remediation": "Use parameterized queries.",
+          "meta": {
+            "scanner": "nuclei",
+            "host": "example.com",
+            "scheme": "https",
+            "port": 443,
+            "path": "/search",
+            "parameter": "query",
+            "method": "GET",
+            "protocol": "",
+            "query_keys": ["query"],
+            "raw_id": "nuclei-cluster-search-query",
+            "category": "SQL Injection"
+          }
+        },
+        {
+          "finding_id": "cluster-overlap-c",
+          "vulnerability_name": "SQL Injection in keyword parameter",
+          "severity": "medium",
+          "asset_id": "https://example.com/search/advanced?keyword=1",
+          "description": "Advanced search input handling looks injectable.",
+          "remediation": "Use parameterized queries.",
+          "meta": {
+            "scanner": "wapiti",
+            "host": "example.com",
+            "scheme": "https",
+            "port": 443,
+            "path": "/search/advanced",
+            "parameter": "keyword",
+            "method": "GET",
+            "protocol": "",
+            "query_keys": ["keyword"],
+            "raw_id": "wapiti-cluster-search-keyword",
+            "category": "SQL Injection"
+          }
+        },
+        {
+          "finding_id": "cluster-overlap-d",
+          "vulnerability_name": "SQL Injection",
+          "severity": "medium",
+          "asset_id": "https://example.com/admin/users?id=1",
+          "description": "Potential SQL injection on the admin user lookup.",
+          "remediation": "Use parameterized queries.",
+          "meta": {
+            "scanner": "nikto",
+            "host": "example.com",
+            "scheme": "https",
+            "port": 443,
+            "path": "/admin/users",
+            "parameter": "id",
+            "method": "GET",
+            "protocol": "",
+            "query_keys": ["id"],
+            "raw_id": "nikto-cluster-admin-id",
+            "category": "SQL Injection"
+          }
+        }
+      ]
+    },
+    {
+      "case_id": "provenance_clean_plus_degraded_merges_with_clean_confirmation",
+      "bucket": "gray_zone",
+      "case_tags": ["provenance"],
+      "description": "A clean source plus a degraded corroborating source should merge without overstating confirmation.",
+      "expected_mode": "llm",
+      "expected_merge_count": 1,
+      "expected_groups": [["prov-clean-a", "prov-clean-b"]],
+      "expected_provenance": {
+        "group": ["prov-clean-a", "prov-clean-b"],
+        "found_by": ["zap", "nikto"],
+        "meta_scanners": ["zap", "nikto"],
+        "confirmation_scanners": ["zap"],
+        "degraded_scanners": ["nikto"],
+        "has_multi_scanner_confirmation": false,
+        "degraded_execution": true,
+        "source_findings": ["prov-clean-a", "prov-clean-b"]
+      },
+      "findings": [
+        {
+          "finding_id": "prov-clean-a",
+          "vulnerability_name": "SQL Injection in search parameter",
+          "severity": "medium",
+          "asset_id": "https://example.com/login?q=1",
+          "description": "Clean scanner run found the likely injectable search input.",
+          "remediation": "Use parameterized queries.",
+          "meta": {
+            "scanner": "zap",
+            "host": "example.com",
+            "scheme": "https",
+            "port": 443,
+            "path": "/login",
+            "parameter": "q",
+            "method": "GET",
+            "protocol": "",
+            "query_keys": ["q"],
+            "raw_id": "zap-prov-clean",
+            "category": "SQL Injection"
+          }
+        },
+        {
+          "finding_id": "prov-clean-b",
+          "vulnerability_name": "SQL Injection",
+          "severity": "medium",
+          "asset_id": "https://example.com/login?account=2",
+          "description": "Degraded scanner run reported a related SQL injection on a nearby login input.",
+          "remediation": "Use parameterized queries.",
+          "meta": {
+            "scanner": "nikto",
+            "host": "example.com",
+            "scheme": "https",
+            "port": 443,
+            "path": "/login",
+            "parameter": "account",
+            "method": "GET",
+            "protocol": "",
+            "query_keys": ["account"],
+            "raw_id": "nikto-prov-degraded",
+            "category": "SQL Injection",
+            "degraded_execution": true
+          }
+        }
+      ]
+    },
+    {
+      "case_id": "provenance_degraded_only_corroboration_not_strong_confirmation",
+      "bucket": "gray_zone",
+      "case_tags": ["provenance"],
+      "description": "Degraded-only corroboration should not count as strong multi-scanner confirmation.",
+      "expected_mode": "llm",
+      "expected_merge_count": 1,
+      "expected_groups": [["prov-degraded-a", "prov-degraded-b"]],
+      "expected_provenance": {
+        "group": ["prov-degraded-a", "prov-degraded-b"],
+        "found_by": ["zap", "nikto"],
+        "meta_scanners": ["zap", "nikto"],
+        "confirmation_scanners": [],
+        "degraded_scanners": ["zap", "nikto"],
+        "has_multi_scanner_confirmation": false,
+        "degraded_execution": true,
+        "source_findings": ["prov-degraded-a", "prov-degraded-b"]
+      },
+      "findings": [
+        {
+          "finding_id": "prov-degraded-a",
+          "vulnerability_name": "SQL Injection in search parameter",
+          "severity": "medium",
+          "asset_id": "https://example.com/login?q=1",
+          "description": "Degraded scanner run found a likely injectable search input.",
+          "remediation": "Use parameterized queries.",
+          "meta": {
+            "scanner": "zap",
+            "host": "example.com",
+            "scheme": "https",
+            "port": 443,
+            "path": "/login",
+            "parameter": "q",
+            "method": "GET",
+            "protocol": "",
+            "query_keys": ["q"],
+            "raw_id": "zap-prov-degraded",
+            "category": "SQL Injection",
+            "degraded_execution": true
+          }
+        },
+        {
+          "finding_id": "prov-degraded-b",
+          "vulnerability_name": "SQL Injection",
+          "severity": "medium",
+          "asset_id": "https://example.com/login?account=2",
+          "description": "Another degraded run reported a related SQL injection on a nearby login input.",
+          "remediation": "Use parameterized queries.",
+          "meta": {
+            "scanner": "nikto",
+            "host": "example.com",
+            "scheme": "https",
+            "port": 443,
+            "path": "/login",
+            "parameter": "account",
+            "method": "GET",
+            "protocol": "",
+            "query_keys": ["account"],
+            "raw_id": "nikto-prov-degraded-2",
+            "category": "SQL Injection",
+            "degraded_execution": true
+          }
+        }
+      ]
+    }
+  ]
+}

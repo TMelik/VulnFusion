@@ -1,0 +1,309 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "case_id": "fixed_finding",
+      "description": "A finding present in the previous run is gone in the current run.",
+      "previous_findings": [
+        {
+          "finding_id": "prev-fixed",
+          "vulnerability_name": "SQL Injection",
+          "severity": "high",
+          "asset_id": "https://example.com/login?id=1",
+          "description": "Old issue.",
+          "remediation": "Fix it.",
+          "meta": {
+            "scanner": "zap",
+            "host": "example.com",
+            "scheme": "https",
+            "port": 443,
+            "path": "/login",
+            "parameter": "id",
+            "method": "GET",
+            "raw_id": "prev-fixed-raw",
+            "category": "SQL Injection"
+          }
+        }
+      ],
+      "current_findings": [],
+      "expected_diff": {
+        "fixed": ["prev-fixed"],
+        "added": [],
+        "removed": ["prev-fixed"],
+        "changed": [],
+        "unchanged": []
+      }
+    },
+    {
+      "case_id": "added_finding",
+      "description": "A finding appears only in the current run.",
+      "previous_findings": [],
+      "current_findings": [
+        {
+          "finding_id": "curr-added",
+          "vulnerability_name": "SQL Injection",
+          "severity": "high",
+          "asset_id": "https://example.com/login?id=1",
+          "description": "New issue.",
+          "remediation": "Fix it.",
+          "meta": {
+            "scanner": "zap",
+            "host": "example.com",
+            "scheme": "https",
+            "port": 443,
+            "path": "/login",
+            "parameter": "id",
+            "method": "GET",
+            "raw_id": "curr-added-raw",
+            "category": "SQL Injection"
+          }
+        }
+      ],
+      "expected_diff": {
+        "fixed": [],
+        "added": ["curr-added"],
+        "removed": [],
+        "changed": [],
+        "unchanged": []
+      }
+    },
+    {
+      "case_id": "unchanged_finding",
+      "description": "A stable finding should stay unchanged across runs.",
+      "previous_findings": [
+        {
+          "finding_id": "prev-unchanged",
+          "vulnerability_name": "SQL Injection",
+          "severity": "medium",
+          "asset_id": "https://example.com/login?q=1",
+          "description": "Stable issue.",
+          "remediation": "Fix it.",
+          "meta": {
+            "scanner": "zap",
+            "host": "example.com",
+            "scheme": "https",
+            "port": 443,
+            "path": "/login",
+            "parameter": "q",
+            "method": "GET",
+            "raw_id": "prev-unchanged-raw",
+            "category": "SQL Injection"
+          }
+        }
+      ],
+      "current_findings": [
+        {
+          "finding_id": "curr-unchanged",
+          "vulnerability_name": "SQL Injection",
+          "severity": "medium",
+          "asset_id": "https://example.com/login?q=1",
+          "description": "Stable issue.",
+          "remediation": "Fix it.",
+          "meta": {
+            "scanner": "zap",
+            "host": "example.com",
+            "scheme": "https",
+            "port": 443,
+            "path": "/login",
+            "parameter": "q",
+            "method": "GET",
+            "raw_id": "prev-unchanged-raw",
+            "category": "SQL Injection"
+          }
+        }
+      ],
+      "expected_diff": {
+        "fixed": [],
+        "added": [],
+        "removed": [],
+        "changed": [],
+        "unchanged": ["curr-unchanged"]
+      },
+      "expected_stable_matches": [
+        {
+          "previous": "prev-unchanged",
+          "current": "curr-unchanged",
+          "classification": "unchanged"
+        }
+      ]
+    },
+    {
+      "case_id": "changed_finding_stable_identity",
+      "description": "A stable identity with changed severity should classify as changed.",
+      "previous_findings": [
+        {
+          "finding_id": "prev-changed",
+          "vulnerability_name": "SQL Injection",
+          "severity": "low",
+          "asset_id": "https://example.com/login?q=1",
+          "description": "Stable issue.",
+          "remediation": "Fix it.",
+          "meta": {
+            "scanner": "zap",
+            "host": "example.com",
+            "scheme": "https",
+            "port": 443,
+            "path": "/login",
+            "parameter": "q",
+            "method": "GET",
+            "raw_id": "prev-changed-raw",
+            "category": "SQL Injection"
+          }
+        }
+      ],
+      "current_findings": [
+        {
+          "finding_id": "curr-changed",
+          "vulnerability_name": "SQL Injection",
+          "severity": "high",
+          "asset_id": "https://example.com/login?q=1",
+          "description": "Stable issue.",
+          "remediation": "Fix it.",
+          "meta": {
+            "scanner": "zap",
+            "host": "example.com",
+            "scheme": "https",
+            "port": 443,
+            "path": "/login",
+            "parameter": "q",
+            "method": "GET",
+            "raw_id": "prev-changed-raw",
+            "category": "SQL Injection"
+          }
+        }
+      ],
+      "expected_diff": {
+        "fixed": [],
+        "added": [],
+        "removed": [],
+        "changed": ["curr-changed"],
+        "unchanged": []
+      },
+      "expected_stable_matches": [
+        {
+          "previous": "prev-changed",
+          "current": "curr-changed",
+          "classification": "changed"
+        }
+      ]
+    },
+    {
+      "case_id": "wording_change_same_finding",
+      "description": "A wording-only header rename should keep the same logical finding identity.",
+      "previous_findings": [
+        {
+          "finding_id": "prev-wording",
+          "vulnerability_name": "CSP Header Missing",
+          "severity": "low",
+          "asset_id": "https://example.com/login",
+          "description": "Missing CSP header on the login endpoint.",
+          "remediation": "Set the header.",
+          "meta": {
+            "scanner": "zap",
+            "host": "example.com",
+            "scheme": "https",
+            "port": 443,
+            "path": "/login",
+            "parameter": "",
+            "method": "GET",
+            "raw_id": "prev-wording-raw"
+          }
+        }
+      ],
+      "current_findings": [
+        {
+          "finding_id": "curr-wording",
+          "vulnerability_name": "Content Security Policy Configuration",
+          "severity": "low",
+          "asset_id": "https://example.com/login",
+          "description": "The same endpoint is missing the CSP protection.",
+          "remediation": "Set the header.",
+          "meta": {
+            "scanner": "zap",
+            "host": "example.com",
+            "scheme": "https",
+            "port": 443,
+            "path": "/login",
+            "parameter": "",
+            "method": "GET",
+            "raw_id": "curr-wording-raw"
+          }
+        }
+      ],
+      "expected_diff": {
+        "fixed": [],
+        "added": [],
+        "removed": [],
+        "changed": [],
+        "unchanged": ["curr-wording"]
+      },
+      "expected_stable_matches": [
+        {
+          "previous": "prev-wording",
+          "current": "curr-wording",
+          "classification": "unchanged"
+        }
+      ]
+    },
+    {
+      "case_id": "unstable_identity_not_fixed_plus_added",
+      "description": "Raw-id churn alone should not create a fake fixed-plus-added pair.",
+      "previous_findings": [
+        {
+          "finding_id": "prev-identity",
+          "vulnerability_name": "SQL Injection",
+          "severity": "medium",
+          "asset_id": "https://example.com/login?q=1",
+          "description": "Stable issue despite raw id churn.",
+          "remediation": "Fix it.",
+          "meta": {
+            "scanner": "zap",
+            "host": "example.com",
+            "scheme": "https",
+            "port": 443,
+            "path": "/login",
+            "parameter": "q",
+            "method": "GET",
+            "raw_id": "old-raw",
+            "category": "SQL Injection"
+          }
+        }
+      ],
+      "current_findings": [
+        {
+          "finding_id": "curr-identity",
+          "vulnerability_name": "SQL Injection",
+          "severity": "medium",
+          "asset_id": "https://example.com/login?q=1",
+          "description": "Stable issue despite raw id churn.",
+          "remediation": "Fix it.",
+          "meta": {
+            "scanner": "zap",
+            "host": "example.com",
+            "scheme": "https",
+            "port": 443,
+            "path": "/login",
+            "parameter": "q",
+            "method": "GET",
+            "raw_id": "new-raw",
+            "category": "SQL Injection"
+          }
+        }
+      ],
+      "expected_diff": {
+        "fixed": [],
+        "added": [],
+        "removed": [],
+        "changed": [],
+        "unchanged": ["curr-identity"]
+      },
+      "expected_stable_matches": [
+        {
+          "previous": "prev-identity",
+          "current": "curr-identity",
+          "classification": "unchanged"
+        }
+      ]
+    }
+  ]
+}

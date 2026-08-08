@@ -1,0 +1,55 @@
+# Default ZAP Automation Framework template used when vuln-manager runs ZAP
+# without --zap-af-plan. The runtime preserves most template content, but it
+# always rewrites these fields:
+# - env.contexts[0].name / urls / includePaths
+# - spider.parameters.context / url / maxDuration
+# - spiderAjax.parameters.context / url / maxDuration
+# - passiveScan-wait.parameters.maxDuration
+# - activeScan.parameters.context / url / maxRuleDurationInMins / maxScanDurationInMins
+# - report.parameters.template / reportDir / reportFile / reportTitle / reportDescription
+#
+# Keep both spiders for good coverage: traditional spider is fast and reliable
+# for link-driven apps, while spiderAjax helps with JS-rendered routes. Add
+# --zap-active-scan when you want vuln-manager to inject an activeScan job
+# before the report stage if the template does not already define one.
+env:
+  parameters:
+    failOnError: false
+    failOnWarning: false
+    continueOnFailure: true
+    progressToStdout: true
+  contexts:
+    - name: scan-target-template
+      urls:
+        - https://example.com/
+      includePaths:
+        - ^https://example\.com(?:/.*)?$
+
+jobs:
+  - type: passiveScan-config
+    parameters:
+      scanOnlyInScope: true
+
+  - type: spider
+    parameters:
+      context: scan-target-template
+      url: https://example.com/
+      maxDuration: 20
+
+  - type: spiderAjax
+    parameters:
+      context: scan-target-template
+      url: https://example.com/
+      maxDuration: 20
+
+  - type: passiveScan-wait
+    parameters:
+      maxDuration: 20
+
+  - type: report
+    parameters:
+      template: traditional-json
+      reportDir: /zap/wrk
+      reportFile: zap-report.json
+      reportTitle: ZAP template placeholder
+      reportDescription: Starter ZAP Automation Framework template for vuln-manager.

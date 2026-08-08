@@ -1,0 +1,71 @@
+{
+  "version": 1,
+  "datasets": [
+    {
+      "dataset_id": "synthetic_100_balanced",
+      "size": 100,
+      "seed": 42,
+      "mix": "balanced",
+      "host_pool": 25,
+      "group_plan": {
+        "same_scanner_exact": 6,
+        "deterministic_cve": 4,
+        "deterministic_header": 4,
+        "deterministic_parameterized": 4,
+        "gray_zone_parameter": 4,
+        "gray_zone_nearby_path": 4,
+        "gray_zone_service_overlap": 3,
+        "gray_zone_antiframing": 3,
+        "guardrail_header_family": 4,
+        "guardrail_path_identity": 4,
+        "same_host_unrelated": 4,
+        "multi_cluster": 2,
+        "noise_singleton": 6
+      }
+    },
+    {
+      "dataset_id": "synthetic_500_balanced",
+      "size": 500,
+      "seed": 84,
+      "mix": "balanced",
+      "host_pool": 125,
+      "group_plan": {
+        "same_scanner_exact": 30,
+        "deterministic_cve": 20,
+        "deterministic_header": 20,
+        "deterministic_parameterized": 20,
+        "gray_zone_parameter": 20,
+        "gray_zone_nearby_path": 20,
+        "gray_zone_service_overlap": 15,
+        "gray_zone_antiframing": 15,
+        "guardrail_header_family": 20,
+        "guardrail_path_identity": 20,
+        "same_host_unrelated": 20,
+        "multi_cluster": 10,
+        "noise_singleton": 30
+      }
+    },
+    {
+      "dataset_id": "synthetic_1000_balanced",
+      "size": 1000,
+      "seed": 126,
+      "mix": "balanced",
+      "host_pool": 250,
+      "group_plan": {
+        "same_scanner_exact": 60,
+        "deterministic_cve": 40,
+        "deterministic_header": 40,
+        "deterministic_parameterized": 40,
+        "gray_zone_parameter": 40,
+        "gray_zone_nearby_path": 40,
+        "gray_zone_service_overlap": 30,
+        "gray_zone_antiframing": 30,
+        "guardrail_header_family": 40,
+        "guardrail_path_identity": 40,
+        "same_host_unrelated": 40,
+        "multi_cluster": 20,
+        "noise_singleton": 60
+      }
+    }
+  ]
+}

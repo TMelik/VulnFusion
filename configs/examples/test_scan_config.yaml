@@ -1,0 +1,48 @@
+version: 1
+
+global:
+  scan_mode: automatic
+  http_mode: auto
+  save_raw: true
+  normalize: true
+  # report defaults to true for normal scan runs; set report: false to suppress report.html
+
+scanners:
+  nmap:
+    enabled: true
+    options:
+      ports: "80,443,8080"
+      scripts:
+        - vulners
+        - http-title
+
+  nuclei:
+    enabled: true
+    options:
+      severity:
+        - medium
+        - high
+        - critical
+      timeout: 900
+
+  wapiti:
+    enabled: true
+    options:
+      level: 2
+      modules:
+        - sql
+        - xss
+      timeout: 1800
+
+  nikto:
+    enabled: true
+    options:
+      tuning: "123b"
+      timeout: 1800
+
+  zap:
+    enabled: true
+    options:
+      timeout: 1200
+      active_scan: true
+      af_plan_path: ../zap_test_template.yaml

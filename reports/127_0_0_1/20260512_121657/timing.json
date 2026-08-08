@@ -1,0 +1,105 @@
+{
+  "target": "127.0.0.1",
+  "run_id": "20260512_121657",
+  "run_folder": "data/127_0_0_1/20260512_121657",
+  "generated_at": "2026-05-12T12:17:03.375729Z",
+  "summary": {
+    "stage_count": 11,
+    "statuses": {
+      "success": 6,
+      "skipped": 4,
+      "failed": 1
+    },
+    "total_duration_seconds": 5.419191
+  },
+  "stages": [
+    {
+      "stage": "nmap",
+      "start_time": "2026-05-12T12:16:57.958184Z",
+      "end_time": "2026-05-12T12:16:58.361570Z",
+      "duration_seconds": 0.403366,
+      "status": "success",
+      "note": "scanner=nmap; target=127.0.0.1"
+    },
+    {
+      "stage": "normalization",
+      "start_time": "2026-05-12T12:16:58.362821Z",
+      "end_time": "2026-05-12T12:16:58.362883Z",
+      "duration_seconds": 4.9e-05,
+      "status": "success",
+      "note": "scanner=nmap; target=127.0.0.1; raw_findings=0; normalized_findings=0"
+    },
+    {
+      "stage": "nuclei",
+      "start_time": "2026-05-12T12:16:58.379562Z",
+      "end_time": "2026-05-12T12:16:58.379587Z",
+      "duration_seconds": 6e-06,
+      "status": "skipped",
+      "note": "scanner enabled but not scheduled for this target/run mode"
+    },
+    {
+      "stage": "wapiti",
+      "start_time": "2026-05-12T12:16:58.379602Z",
+      "end_time": "2026-05-12T12:16:58.379608Z",
+      "duration_seconds": 3e-06,
+      "status": "skipped",
+      "note": "scanner enabled but not scheduled for this target/run mode"
+    },
+    {
+      "stage": "nikto",
+      "start_time": "2026-05-12T12:16:58.379615Z",
+      "end_time": "2026-05-12T12:16:58.379620Z",
+      "duration_seconds": 2e-06,
+      "status": "skipped",
+      "note": "scanner enabled but not scheduled for this target/run mode"
+    },
+    {
+      "stage": "zap",
+      "start_time": "2026-05-12T12:16:58.379625Z",
+      "end_time": "2026-05-12T12:16:58.379630Z",
+      "duration_seconds": 1e-06,
+      "status": "skipped",
+      "note": "scanner enabled but not scheduled for this target/run mode"
+    },
+    {
+      "stage": "llm_processing",
+      "start_time": "2026-05-12T12:17:03.367978Z",
+      "end_time": "2026-05-12T12:17:03.368118Z",
+      "duration_seconds": 0.000134,
+      "status": "success",
+      "note": "mode=llm; llm_calls=0; attempted=0; succeeded=0"
+    },
+    {
+      "stage": "deduplication",
+      "start_time": "2026-05-12T12:17:03.367943Z",
+      "end_time": "2026-05-12T12:17:03.368128Z",
+      "duration_seconds": 0.000161,
+      "status": "success",
+      "note": "duplicate_mode=llm; final_findings=0; merged_groups=0"
+    },
+    {
+      "stage": "comparison",
+      "start_time": "2026-05-12T12:17:03.368134Z",
+      "end_time": "2026-05-12T12:17:03.371726Z",
+      "duration_seconds": 0.003587,
+      "status": "success",
+      "note": "comparison completed"
+    },
+    {
+      "stage": "report_generation",
+      "start_time": "2026-05-12T12:17:03.372716Z",
+      "end_time": "2026-05-12T12:17:03.373332Z",
+      "duration_seconds": 0.000606,
+      "status": "success",
+      "note": "output=data/127_0_0_1/20260512_121657/report.html"
+    },
+    {
+      "stage": "total_workflow",
+      "start_time": "2026-05-12T12:16:57.956483Z",
+      "end_time": "2026-05-12T12:17:03.375698Z",
+      "duration_seconds": 5.419191,
+      "status": "failed",
+      "note": "target=127.0.0.1; scanner=all; findings=0; defectdojo_error=1 DefectDojo raw upload(s) failed"
+    }
+  ]
+}

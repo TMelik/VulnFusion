@@ -1,0 +1,13 @@
+version: "3.9"
+
+# Optional override for host networking (Linux only).
+# Use this when you need to scan localhost or LAN targets:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.host-net.yml run --rm vuln-manager \
+#     python3 main.py --target 192.168.1.1 --scanner nmap
+#
+# Note: host networking is NOT supported on Docker Desktop for macOS/Windows.
+
+services:
+  vuln-manager:
+    network_mode: host

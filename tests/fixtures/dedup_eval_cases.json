@@ -1,0 +1,680 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "case_id": "same_cve_same_effective_target",
+      "bucket": "deterministic",
+      "description": "Two scanners report the same CVE on the same effective target.",
+      "expected_mode": "deterministic",
+      "expected_merge_count": 1,
+      "expected_groups": [["det-cve-a", "det-cve-b"]],
+      "findings": [
+        {
+          "finding_id": "det-cve-a",
+          "vulnerability_name": "CVE-2024-1111",
+          "severity": "high",
+          "asset_id": "example.com:443",
+          "description": "Service-level CVE match.",
+          "remediation": "Patch the affected service.",
+          "meta": {
+            "scanner": "nmap",
+            "host": "example.com",
+            "scheme": "",
+            "port": 443,
+            "path": "",
+            "parameter": "",
+            "method": "",
+            "protocol": "tcp",
+            "service": "https",
+            "query_keys": [],
+            "raw_id": "nmap-cve-1",
+            "cve_id": "CVE-2024-1111",
+            "cve_ids": ["CVE-2024-1111"]
+          }
+        },
+        {
+          "finding_id": "det-cve-b",
+          "vulnerability_name": "Generic CMS SQLi",
+          "severity": "medium",
+          "asset_id": "https://example.com/login",
+          "description": "Web endpoint wording for the same CVE.",
+          "remediation": "Patch the affected service.",
+          "meta": {
+            "scanner": "nuclei",
+            "host": "example.com",
+            "scheme": "https",
+            "port": 443,
+            "path": "/login",
+            "parameter": "",
+            "method": "GET",
+            "protocol": "",
+            "query_keys": [],
+            "raw_id": "nuclei-cve-1",
+            "category": "SQL Injection",
+            "cve_id": "CVE-2024-1111",
+            "cve_ids": ["CVE-2024-1111"]
+          }
+        }
+      ]
+    },
+    {
+      "case_id": "same_header_family_same_endpoint",
+      "bucket": "deterministic",
+      "description": "Two scanners report the same header family on the same endpoint.",
+      "expected_mode": "deterministic",
+      "expected_merge_count": 1,
+      "expected_groups": [["det-header-a", "det-header-b"]],
+      "findings": [
+        {
+          "finding_id": "det-header-a",
+          "vulnerability_name": "CSP Header Missing",
+          "severity": "medium",
+          "asset_id": "https://example.com/login",
+          "description": "Missing CSP header on the login endpoint.",
+          "remediation": "Set the header.",
+          "meta": {
+            "scanner": "zap",
+            "host": "example.com",
+            "scheme": "https",
+            "port": 443,
+            "path": "/login",
+            "parameter": "",
+            "method": "GET",
+            "protocol": "",
+            "query_keys": [],
+            "raw_id": "zap-csp-1"
+          }
+        },
+        {
+          "finding_id": "det-header-b",
+          "vulnerability_name": "Content Security Policy Configuration",
+          "severity": "low",
+          "asset_id": "https://example.com/login",
+          "description": "The same endpoint is missing the CSP protection.",
+          "remediation": "Set the header.",
+          "meta": {
+            "scanner": "nuclei",
+            "host": "example.com",
+            "scheme": "https",
+            "port": 443,
+            "path": "/login",
+            "parameter": "",
+            "method": "GET",
+            "protocol": "",
+            "query_keys": [],
+            "raw_id": "nuclei-csp-1"
+          }
+        }
+      ]
+    },
+    {
+      "case_id": "same_strong_family_same_path_parameter_method",
+      "bucket": "deterministic",
+      "description": "Strong parameterized findings on the same path, parameter, and method should premerge.",
+      "expected_mode": "deterministic",
+      "expected_merge_count": 1,
+      "expected_groups": [["det-sqli-a", "det-sqli-b"]],
+      "findings": [
+        {
+          "finding_id": "det-sqli-a",
+          "vulnerability_name": "SQL Injection",
+          "severity": "high",
+          "asset_id": "https://example.com/db/get?id=1",
+          "description": "ZAP found injectable id input.",
+          "remediation": "Use parameterized queries.",
+          "meta": {
+            "scanner": "zap",
+            "host": "example.com",
+            "scheme": "https",
+            "port": 443,
+            "path": "/db/get",
+            "parameter": "id",
+            "method": "POST",
+            "protocol": "",
+            "query_keys": ["id"],
+            "raw_id": "zap-sqli-id",
+            "category": "SQL Injection"
+          }
+        },
+        {
+          "finding_id": "det-sqli-b",
+          "vulnerability_name": "SQL Injection",
+          "severity": "medium",
+          "asset_id": "https://example.com/db/get?id=2",
+          "description": "Wapiti found the same parameter-level SQL injection.",
+          "remediation": "Use parameterized queries.",
+          "meta": {
+            "scanner": "wapiti",
+            "host": "example.com",
+            "scheme": "https",
+            "port": 443,
+            "path": "/db/get",
+            "parameter": "id",
+            "method": "POST",
+            "protocol": "",
+            "query_keys": ["id"],
+            "raw_id": "wapiti-sqli-id",
+            "category": "SQL Injection"
+          }
+        }
+      ]
+    },
+    {
+      "case_id": "repeated_same_scanner_exact_duplicate",
+      "bucket": "deterministic",
+      "description": "Exact same-scanner duplicates should merge before any cross-scanner work.",
+      "expected_mode": "deterministic",
+      "expected_merge_count": 1,
+      "expected_groups": [["det-same-scanner-a", "det-same-scanner-b"]],
+      "findings": [
+        {
+          "finding_id": "det-same-scanner-a",
+          "vulnerability_name": "SQL Injection",
+          "severity": "medium",
+          "asset_id": "https://example.com/login?q=search",
+          "description": "Repeated scanner record.",
+          "remediation": "Validate input.",
+          "meta": {
+            "scanner": "zap",
+            "host": "example.com",
+            "scheme": "https",
+            "port": 443,
+            "path": "/login",
+            "parameter": "q",
+            "method": "GET",
+            "protocol": "",
+            "query_keys": ["q"],
+            "raw_id": "zap-dup-1",
+            "category": "SQL Injection"
+          }
+        },
+        {
+          "finding_id": "det-same-scanner-b",
+          "vulnerability_name": "SQL Injection",
+          "severity": "medium",
+          "asset_id": "https://example.com/login?q=search",
+          "description": "Repeated scanner record.",
+          "remediation": "Validate input.",
+          "meta": {
+            "scanner": "zap",
+            "host": "example.com",
+            "scheme": "https",
+            "port": 443,
+            "path": "/login",
+            "parameter": "q",
+            "method": "GET",
+            "protocol": "",
+            "query_keys": ["q"],
+            "raw_id": "zap-dup-1",
+            "category": "SQL Injection"
+          }
+        }
+      ]
+    },
+    {
+      "case_id": "gray_same_family_different_parameters_merge",
+      "bucket": "gray_zone",
+      "description": "Similar SQL injection findings on the same path but different parameters should reach the LLM path.",
+      "expected_mode": "llm",
+      "expected_merge_count": 1,
+      "expected_groups": [["gray-param-a", "gray-param-b"]],
+      "findings": [
+        {
+          "finding_id": "gray-param-a",
+          "vulnerability_name": "SQL Injection in search parameter",
+          "severity": "medium",
+          "asset_id": "https://example.com/login?q=1",
+          "description": "Search field may be injectable.",
+          "remediation": "Use parameterized queries.",
+          "meta": {
+            "scanner": "zap",
+            "host": "example.com",
+            "scheme": "https",
+            "port": 443,
+            "path": "/login",
+            "parameter": "q",
+            "method": "GET",
+            "protocol": "",
+            "query_keys": ["q"],
+            "raw_id": "zap-gray-q",
+            "category": "SQL Injection"
+          }
+        },
+        {
+          "finding_id": "gray-param-b",
+          "vulnerability_name": "SQL Injection",
+          "severity": "medium",
+          "asset_id": "https://example.com/login?account=2",
+          "description": "Generic SQL injection finding on a nearby login input.",
+          "remediation": "Use parameterized queries.",
+          "meta": {
+            "scanner": "nuclei",
+            "host": "example.com",
+            "scheme": "https",
+            "port": 443,
+            "path": "/login",
+            "parameter": "account",
+            "method": "GET",
+            "protocol": "",
+            "query_keys": ["account"],
+            "raw_id": "nuclei-gray-account",
+            "category": "SQL Injection"
+          }
+        }
+      ]
+    },
+    {
+      "case_id": "gray_nearby_paths_contextual_overlap",
+      "bucket": "gray_zone",
+      "description": "Nearby login paths with similar wording should be handled by the gray-zone LLM path.",
+      "expected_mode": "llm",
+      "expected_merge_count": 1,
+      "expected_groups": [["gray-path-a", "gray-path-b"]],
+      "findings": [
+        {
+          "finding_id": "gray-path-a",
+          "vulnerability_name": "SQL Injection in search parameter",
+          "severity": "medium",
+          "asset_id": "https://example.com/login?q=1",
+          "description": "Input handling on /login looked injectable.",
+          "remediation": "Use parameterized queries.",
+          "meta": {
+            "scanner": "zap",
+            "host": "example.com",
+            "scheme": "https",
+            "port": 443,
+            "path": "/login",
+            "parameter": "q",
+            "method": "GET",
+            "protocol": "",
+            "query_keys": ["q"],
+            "raw_id": "zap-gray-login",
+            "category": "SQL Injection"
+          }
+        },
+        {
+          "finding_id": "gray-path-b",
+          "vulnerability_name": "SQL Injection in account parameter",
+          "severity": "medium",
+          "asset_id": "https://example.com/auth/login?account=1",
+          "description": "Generic SQL injection match on a nearby login endpoint.",
+          "remediation": "Use parameterized queries.",
+          "meta": {
+            "scanner": "nuclei",
+            "host": "example.com",
+            "scheme": "https",
+            "port": 443,
+            "path": "/auth/login",
+            "parameter": "account",
+            "method": "GET",
+            "protocol": "",
+            "query_keys": ["account"],
+            "raw_id": "nuclei-gray-auth-login",
+            "category": "SQL Injection"
+          }
+        }
+      ]
+    },
+    {
+      "case_id": "gray_service_vs_url_contextual_overlap",
+      "bucket": "gray_zone",
+      "description": "Service-vs-URL overlap without a shared CVE should rely on contextual gray-zone handling.",
+      "expected_mode": "llm",
+      "expected_merge_count": 1,
+      "expected_groups": [["gray-service-a", "gray-service-b"]],
+      "findings": [
+        {
+          "finding_id": "gray-service-a",
+          "vulnerability_name": "Potential CMS Exposure",
+          "severity": "medium",
+          "asset_id": "example.com:443",
+          "description": "HTTPS service exposes a CMS login surface.",
+          "remediation": "Review the exposed service.",
+          "meta": {
+            "scanner": "nmap",
+            "host": "example.com",
+            "scheme": "",
+            "port": 443,
+            "path": "",
+            "parameter": "",
+            "method": "",
+            "protocol": "tcp",
+            "service": "https",
+            "query_keys": [],
+            "raw_id": "nmap-gray-cms",
+            "technology": "AcmeCMS"
+          }
+        },
+        {
+          "finding_id": "gray-service-b",
+          "vulnerability_name": "Generic CMS SQLi",
+          "severity": "medium",
+          "asset_id": "https://example.com/login",
+          "description": "Generic SQL injection match on the AcmeCMS login endpoint.",
+          "remediation": "Patch the application.",
+          "meta": {
+            "scanner": "nuclei",
+            "host": "example.com",
+            "scheme": "https",
+            "port": 443,
+            "path": "/login",
+            "parameter": "",
+            "method": "GET",
+            "protocol": "",
+            "query_keys": [],
+            "raw_id": "nuclei-gray-cms-sqli",
+            "technology": "AcmeCMS",
+            "category": "SQL Injection"
+          }
+        }
+      ]
+    },
+    {
+      "case_id": "gray_ambiguous_antiframing_wording",
+      "bucket": "gray_zone",
+      "description": "Ambiguous anti-framing wording should stay in gray-zone LLM coverage.",
+      "expected_mode": "llm",
+      "expected_merge_count": 1,
+      "expected_groups": [["gray-frame-a", "gray-frame-b"]],
+      "findings": [
+        {
+          "finding_id": "gray-frame-a",
+          "vulnerability_name": "Clickjacking policy check",
+          "severity": "low",
+          "asset_id": "https://example.com/login",
+          "description": "Login page may not enforce anti-framing controls.",
+          "remediation": "Review browser security controls.",
+          "meta": {
+            "scanner": "zap",
+            "host": "example.com",
+            "scheme": "https",
+            "port": 443,
+            "path": "/login",
+            "parameter": "",
+            "method": "GET",
+            "protocol": "",
+            "query_keys": [],
+            "raw_id": "zap-gray-frame",
+            "category": "Browser Security"
+          }
+        },
+        {
+          "finding_id": "gray-frame-b",
+          "vulnerability_name": "Framing protections review",
+          "severity": "low",
+          "asset_id": "https://example.com/login",
+          "description": "Template flagged potentially missing anti-framing controls.",
+          "remediation": "Review browser security controls.",
+          "meta": {
+            "scanner": "nuclei",
+            "host": "example.com",
+            "scheme": "https",
+            "port": 443,
+            "path": "/login",
+            "parameter": "",
+            "method": "GET",
+            "protocol": "",
+            "query_keys": [],
+            "raw_id": "nuclei-gray-frame",
+            "category": "Browser Security"
+          }
+        }
+      ]
+    },
+    {
+      "case_id": "guardrail_different_header_families_same_endpoint",
+      "bucket": "guardrail",
+      "description": "Different header families on the same endpoint must stay separate.",
+      "expected_mode": "no_merge",
+      "expected_merge_count": 0,
+      "expected_groups": [["guard-header-a"], ["guard-header-b"]],
+      "findings": [
+        {
+          "finding_id": "guard-header-a",
+          "vulnerability_name": "CSP Header Missing",
+          "severity": "low",
+          "asset_id": "https://example.com/login",
+          "description": "Missing CSP header.",
+          "remediation": "Set the correct header.",
+          "meta": {
+            "scanner": "zap",
+            "host": "example.com",
+            "scheme": "https",
+            "port": 443,
+            "path": "/login",
+            "parameter": "",
+            "method": "GET",
+            "protocol": "",
+            "query_keys": [],
+            "raw_id": "zap-guard-csp"
+          }
+        },
+        {
+          "finding_id": "guard-header-b",
+          "vulnerability_name": "Content-Type Header Missing",
+          "severity": "low",
+          "asset_id": "https://example.com/login",
+          "description": "Missing Content-Type header.",
+          "remediation": "Set the correct header.",
+          "meta": {
+            "scanner": "nuclei",
+            "host": "example.com",
+            "scheme": "https",
+            "port": 443,
+            "path": "/login",
+            "parameter": "",
+            "method": "GET",
+            "protocol": "",
+            "query_keys": [],
+            "raw_id": "nuclei-guard-content-type"
+          }
+        }
+      ]
+    },
+    {
+      "case_id": "guardrail_same_family_different_parameters_unsafe",
+      "bucket": "guardrail",
+      "description": "Same family on different parameters can be unsafe to merge and should stay separate here.",
+      "expected_mode": "llm",
+      "expected_merge_count": 0,
+      "expected_groups": [["guard-param-a"], ["guard-param-b"]],
+      "findings": [
+        {
+          "finding_id": "guard-param-a",
+          "vulnerability_name": "SQL Injection",
+          "severity": "medium",
+          "asset_id": "https://example.com/db/get?id=1",
+          "description": "Potential SQL injection via the id parameter.",
+          "remediation": "Use parameterized queries.",
+          "meta": {
+            "scanner": "zap",
+            "host": "example.com",
+            "scheme": "https",
+            "port": 443,
+            "path": "/db/get",
+            "parameter": "id",
+            "method": "GET",
+            "protocol": "",
+            "query_keys": ["id"],
+            "raw_id": "zap-guard-param-id",
+            "category": "SQL Injection"
+          }
+        },
+        {
+          "finding_id": "guard-param-b",
+          "vulnerability_name": "SQL Injection",
+          "severity": "medium",
+          "asset_id": "https://example.com/db/get?account=1",
+          "description": "Potential SQL injection via the account parameter.",
+          "remediation": "Use parameterized queries.",
+          "meta": {
+            "scanner": "nuclei",
+            "host": "example.com",
+            "scheme": "https",
+            "port": 443,
+            "path": "/db/get",
+            "parameter": "account",
+            "method": "GET",
+            "protocol": "",
+            "query_keys": ["account"],
+            "raw_id": "nuclei-guard-param-account",
+            "category": "SQL Injection"
+          }
+        }
+      ]
+    },
+    {
+      "case_id": "guardrail_same_family_different_paths_no_anchor",
+      "bucket": "guardrail",
+      "description": "Same family on different paths without a stronger anchor should stay separate.",
+      "expected_mode": "llm",
+      "expected_merge_count": 0,
+      "expected_groups": [["guard-path-a"], ["guard-path-b"]],
+      "findings": [
+        {
+          "finding_id": "guard-path-a",
+          "vulnerability_name": "SQL Injection",
+          "severity": "medium",
+          "asset_id": "https://example.com/db/get?id=1",
+          "description": "Potential SQL injection on /db/get.",
+          "remediation": "Use parameterized queries.",
+          "meta": {
+            "scanner": "zap",
+            "host": "example.com",
+            "scheme": "https",
+            "port": 443,
+            "path": "/db/get",
+            "parameter": "id",
+            "method": "GET",
+            "protocol": "",
+            "query_keys": ["id"],
+            "raw_id": "zap-guard-path-get",
+            "category": "SQL Injection"
+          }
+        },
+        {
+          "finding_id": "guard-path-b",
+          "vulnerability_name": "SQL Injection",
+          "severity": "medium",
+          "asset_id": "https://example.com/db/list?id=1",
+          "description": "Potential SQL injection on /db/list.",
+          "remediation": "Use parameterized queries.",
+          "meta": {
+            "scanner": "nuclei",
+            "host": "example.com",
+            "scheme": "https",
+            "port": 443,
+            "path": "/db/list",
+            "parameter": "id",
+            "method": "GET",
+            "protocol": "",
+            "query_keys": ["id"],
+            "raw_id": "nuclei-guard-path-list",
+            "category": "SQL Injection"
+          }
+        }
+      ]
+    },
+    {
+      "case_id": "guardrail_internal_server_error_different_endpoint_identity",
+      "bucket": "guardrail",
+      "description": "Generic Internal Server Error findings should not merge across weak endpoint identities.",
+      "expected_mode": "llm",
+      "expected_merge_count": 0,
+      "expected_groups": [["guard-ise-a"], ["guard-ise-b"]],
+      "findings": [
+        {
+          "finding_id": "guard-ise-a",
+          "vulnerability_name": "Internal Server Error",
+          "severity": "low",
+          "asset_id": "https://example.com/db/get?id=1",
+          "description": "500 error on /db/get.",
+          "remediation": "Review server-side error handling.",
+          "meta": {
+            "scanner": "zap",
+            "host": "example.com",
+            "scheme": "https",
+            "port": 443,
+            "path": "/db/get",
+            "parameter": "id",
+            "method": "GET",
+            "protocol": "",
+            "query_keys": ["id"],
+            "raw_id": "zap-guard-ise-get"
+          }
+        },
+        {
+          "finding_id": "guard-ise-b",
+          "vulnerability_name": "Internal Server Error",
+          "severity": "low",
+          "asset_id": "https://example.com/db/list?id=1",
+          "description": "500 error on /db/list.",
+          "remediation": "Review server-side error handling.",
+          "meta": {
+            "scanner": "nuclei",
+            "host": "example.com",
+            "scheme": "https",
+            "port": 443,
+            "path": "/db/list",
+            "parameter": "id",
+            "method": "GET",
+            "protocol": "",
+            "query_keys": ["id"],
+            "raw_id": "nuclei-guard-ise-list"
+          }
+        }
+      ]
+    },
+    {
+      "case_id": "guardrail_unrelated_same_target_header_vs_sqli",
+      "bucket": "guardrail",
+      "description": "Clearly unrelated same-target findings should be blocked before the LLM path.",
+      "expected_mode": "no_merge",
+      "expected_merge_count": 0,
+      "expected_groups": [["guard-unrelated-a"], ["guard-unrelated-b"]],
+      "findings": [
+        {
+          "finding_id": "guard-unrelated-a",
+          "vulnerability_name": "Missing X-Frame-Options Header",
+          "severity": "low",
+          "asset_id": "https://example.com/login",
+          "description": "Header issue on the login page.",
+          "remediation": "Set the header.",
+          "meta": {
+            "scanner": "zap",
+            "host": "example.com",
+            "scheme": "https",
+            "port": 443,
+            "path": "/login",
+            "parameter": "",
+            "method": "GET",
+            "protocol": "",
+            "query_keys": [],
+            "raw_id": "zap-guard-unrelated-header"
+          }
+        },
+        {
+          "finding_id": "guard-unrelated-b",
+          "vulnerability_name": "SQL Injection",
+          "severity": "high",
+          "asset_id": "https://example.com/login",
+          "description": "SQL injection issue on the login page.",
+          "remediation": "Use parameterized queries.",
+          "meta": {
+            "scanner": "nuclei",
+            "host": "example.com",
+            "scheme": "https",
+            "port": 443,
+            "path": "/login",
+            "parameter": "",
+            "method": "GET",
+            "protocol": "",
+            "query_keys": [],
+            "raw_id": "nuclei-guard-unrelated-sqli",
+            "category": "SQL Injection"
+          }
+        }
+      ]
+    }
+  ]
+}

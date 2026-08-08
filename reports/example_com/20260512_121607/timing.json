@@ -1,0 +1,64 @@
+{
+  "target": "https://example.com",
+  "run_id": "20260512_121607",
+  "run_folder": "/tmp/pytest-of-manemanesyan/pytest-0/test_effective_scan_config_is_0/data/example_com/20260512_121607",
+  "generated_at": "2026-05-12T12:16:07.705224Z",
+  "summary": {
+    "stage_count": 6,
+    "statuses": {
+      "skipped": 3,
+      "success": 3
+    },
+    "total_duration_seconds": 0.152419
+  },
+  "stages": [
+    {
+      "stage": "nikto",
+      "start_time": "2026-05-12T12:16:07.554988Z",
+      "end_time": "2026-05-12T12:16:07.555035Z",
+      "duration_seconds": 2.9e-05,
+      "status": "skipped",
+      "note": "scanner=nikto; target=https://example.com; skip_reason=Web target probe could not confirm a reachable HTTP endpoint for this target.; error=Web target probe could not confirm a reachable HTTP endpoint for this target."
+    },
+    {
+      "stage": "normalization",
+      "start_time": "2026-05-12T12:16:07.703085Z",
+      "end_time": "2026-05-12T12:16:07.703102Z",
+      "duration_seconds": 7e-06,
+      "status": "skipped",
+      "note": "normalization did not run because no scanner result reached the normalization step"
+    },
+    {
+      "stage": "deduplication",
+      "start_time": "2026-05-12T12:16:07.704085Z",
+      "end_time": "2026-05-12T12:16:07.704181Z",
+      "duration_seconds": 8.6e-05,
+      "status": "success",
+      "note": "duplicate_mode=off; final_findings=0; merged_groups=0"
+    },
+    {
+      "stage": "comparison",
+      "start_time": "2026-05-12T12:16:07.704195Z",
+      "end_time": "2026-05-12T12:16:07.704201Z",
+      "duration_seconds": 3e-06,
+      "status": "skipped",
+      "note": "comparison not requested"
+    },
+    {
+      "stage": "report_generation",
+      "start_time": "2026-05-12T12:16:07.704907Z",
+      "end_time": "2026-05-12T12:16:07.705005Z",
+      "duration_seconds": 8.8e-05,
+      "status": "success",
+      "note": "output=/tmp/pytest-of-manemanesyan/pytest-0/test_effective_scan_config_is_0/data/example_com/20260512_121607/report.html"
+    },
+    {
+      "stage": "total_workflow",
+      "start_time": "2026-05-12T12:16:07.552768Z",
+      "end_time": "2026-05-12T12:16:07.705203Z",
+      "duration_seconds": 0.152419,
+      "status": "success",
+      "note": "target=https://example.com; scanner=nikto; findings=0"
+    }
+  ]
+}

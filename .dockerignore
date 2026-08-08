@@ -1,0 +1,46 @@
+# Version control
+.git
+.gitignore
+
+# Python artifacts
+__pycache__
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv/
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS artifacts
+.DS_Store
+Thumbs.db
+
+# Scan output (mounted as volume at runtime)
+data/
+
+# Demo / dev data
+demo_data/
+
+# Logs and temporaries
+*.log
+*.tmp
+*.bak
+.env
+.env.*
+!.env.example
+
+# Docs that are not needed inside the image
+docs/

@@ -1,0 +1,40 @@
+version: 1
+
+global:
+  scan_mode: automatic
+  http_mode: auto
+  save_raw: true
+  normalize: true
+  risk_scoring: false
+  report: true
+
+scanners:
+  nmap:
+    enabled: true
+    options:
+      ports: "80,443,8080,8443"
+      scripts: []
+      timeout: 60
+      extra_args:
+        - --host-timeout
+        - 30s
+        - --max-retries
+        - "1"
+
+  nuclei:
+    enabled: true
+    options:
+      severity:
+        - medium
+        - high
+        - critical
+      timeout: 180
+
+  wapiti:
+    enabled: false
+
+  nikto:
+    enabled: false
+
+  zap:
+    enabled: false

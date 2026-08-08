@@ -1,0 +1,137 @@
+{
+  "target": "ga.map.cyberhayq.am",
+  "run_id": "20260512_165746",
+  "run_folder": "data/ga_map_cyberhayq_am/20260512_165746",
+  "generated_at": "2026-05-12T17:18:32.676728Z",
+  "summary": {
+    "stage_count": 15,
+    "statuses": {
+      "success": 13,
+      "warning": 1,
+      "failed": 1
+    },
+    "total_duration_seconds": 1246.391735
+  },
+  "stages": [
+    {
+      "stage": "nmap",
+      "start_time": "2026-05-12T16:57:46.286827Z",
+      "end_time": "2026-05-12T16:57:49.886822Z",
+      "duration_seconds": 3.599982,
+      "status": "success",
+      "note": "scanner=nmap; target=ga.map.cyberhayq.am"
+    },
+    {
+      "stage": "normalization",
+      "start_time": "2026-05-12T16:57:49.888045Z",
+      "end_time": "2026-05-12T16:57:49.888116Z",
+      "duration_seconds": 5.6e-05,
+      "status": "success",
+      "note": "scanner=nmap; target=ga.map.cyberhayq.am; raw_findings=0; normalized_findings=0"
+    },
+    {
+      "stage": "nuclei",
+      "start_time": "2026-05-12T16:58:01.134035Z",
+      "end_time": "2026-05-12T16:58:44.921416Z",
+      "duration_seconds": 43.787361,
+      "status": "success",
+      "note": "scanner=nuclei; target=http://ga.map.cyberhayq.am"
+    },
+    {
+      "stage": "normalization",
+      "start_time": "2026-05-12T16:58:44.923230Z",
+      "end_time": "2026-05-12T16:58:44.923583Z",
+      "duration_seconds": 0.000341,
+      "status": "success",
+      "note": "scanner=nuclei; target=http://ga.map.cyberhayq.am; raw_findings=1; normalized_findings=1"
+    },
+    {
+      "stage": "wapiti",
+      "start_time": "2026-05-12T16:58:44.923847Z",
+      "end_time": "2026-05-12T16:58:54.913442Z",
+      "duration_seconds": 9.989585,
+      "status": "success",
+      "note": "scanner=wapiti; target=http://ga.map.cyberhayq.am"
+    },
+    {
+      "stage": "normalization",
+      "start_time": "2026-05-12T16:58:54.913784Z",
+      "end_time": "2026-05-12T16:58:54.914091Z",
+      "duration_seconds": 0.000297,
+      "status": "success",
+      "note": "scanner=wapiti; target=http://ga.map.cyberhayq.am; raw_findings=3; normalized_findings=3"
+    },
+    {
+      "stage": "nikto",
+      "start_time": "2026-05-12T16:58:54.914524Z",
+      "end_time": "2026-05-12T17:09:46.963105Z",
+      "duration_seconds": 652.048572,
+      "status": "warning",
+      "note": "scanner=nikto; target=http://ga.map.cyberhayq.am; scanner_error=Nikto reported a degraded execution and the result is not trustworthy as a clean scan. Markers: error limit (, giving up, scan terminated:."
+    },
+    {
+      "stage": "normalization",
+      "start_time": "2026-05-12T17:09:46.963914Z",
+      "end_time": "2026-05-12T17:09:46.964114Z",
+      "duration_seconds": 0.000194,
+      "status": "success",
+      "note": "scanner=nikto; target=http://ga.map.cyberhayq.am; raw_findings=7; normalized_findings=7"
+    },
+    {
+      "stage": "zap",
+      "start_time": "2026-05-12T17:09:47.030348Z",
+      "end_time": "2026-05-12T17:12:19.004140Z",
+      "duration_seconds": 151.973776,
+      "status": "success",
+      "note": "scanner=zap; target=http://ga.map.cyberhayq.am"
+    },
+    {
+      "stage": "normalization",
+      "start_time": "2026-05-12T17:12:19.004394Z",
+      "end_time": "2026-05-12T17:12:19.005320Z",
+      "duration_seconds": 0.000921,
+      "status": "success",
+      "note": "scanner=zap; target=http://ga.map.cyberhayq.am; raw_findings=7; normalized_findings=7"
+    },
+    {
+      "stage": "llm_processing",
+      "start_time": "2026-05-12T17:12:23.722333Z",
+      "end_time": "2026-05-12T17:18:32.618561Z",
+      "duration_seconds": 368.896222,
+      "status": "success",
+      "note": "mode=llm; llm_calls=0; attempted=0; succeeded=0"
+    },
+    {
+      "stage": "deduplication",
+      "start_time": "2026-05-12T17:12:23.722307Z",
+      "end_time": "2026-05-12T17:18:32.618589Z",
+      "duration_seconds": 368.896265,
+      "status": "success",
+      "note": "duplicate_mode=llm; final_findings=14; merged_groups=3"
+    },
+    {
+      "stage": "comparison",
+      "start_time": "2026-05-12T17:18:32.618596Z",
+      "end_time": "2026-05-12T17:18:32.628057Z",
+      "duration_seconds": 0.009458,
+      "status": "success",
+      "note": "comparison completed"
+    },
+    {
+      "stage": "report_generation",
+      "start_time": "2026-05-12T17:18:32.661972Z",
+      "end_time": "2026-05-12T17:18:32.671080Z",
+      "duration_seconds": 0.009091,
+      "status": "success",
+      "note": "output=data/ga_map_cyberhayq_am/20260512_165746/report.html"
+    },
+    {
+      "stage": "total_workflow",
+      "start_time": "2026-05-12T16:57:46.284950Z",
+      "end_time": "2026-05-12T17:18:32.676703Z",
+      "duration_seconds": 1246.391735,
+      "status": "failed",
+      "note": "target=ga.map.cyberhayq.am; scanner=all; findings=14; defectdojo_error=5 DefectDojo raw upload(s) failed"
+    }
+  ]
+}

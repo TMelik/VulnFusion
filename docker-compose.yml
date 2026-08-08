@@ -1,0 +1,36 @@
+version: "3.9"
+
+services:
+  vuln-manager:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: vuln-manager:latest
+    container_name: vuln-manager
+
+    # Scan output persists on the host
+    volumes:
+      - ./data:/app/data
+
+    # Default: standard Docker bridge networking.
+    # To scan localhost or LAN targets, use host networking instead (Linux only):
+    #   docker compose -f docker-compose.yml -f docker-compose.host-net.yml run vuln-manager ...
+    # Or pass --network host directly to docker run.
+
+    # Keep stdin open for interactive one-shot use
+    stdin_open: true
+    tty: true
+
+    # Safe default: list scanners. Override at run time, e.g.:
+    #   docker compose run --rm vuln-manager python3 main.py --target https://example.com --scanner all --report
+    command: ["python3", "main.py", "--list-scanners"]
+
+    environment:
+      PYTHONUNBUFFERED: "1"
+      VULN_MANAGER_DUPLICATE_MODE: ${VULN_MANAGER_DUPLICATE_MODE:-}
+      VULN_MANAGER_LLM_API_KEY: ${VULN_MANAGER_LLM_API_KEY:-}
+      VULN_MANAGER_LLM_API_URL: ${VULN_MANAGER_LLM_API_URL:-}
+      VULN_MANAGER_LLM_MODEL: ${VULN_MANAGER_LLM_MODEL:-}
+      VULN_MANAGER_LLM_TIMEOUT: ${VULN_MANAGER_LLM_TIMEOUT:-}
+      VULN_MANAGER_LLM_DEBUG: ${VULN_MANAGER_LLM_DEBUG:-}
+      VULN_MANAGER_LLM_CACHE_ENABLED: ${VULN_MANAGER_LLM_CACHE_ENABLED:-}

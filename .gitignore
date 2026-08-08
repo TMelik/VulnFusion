@@ -1,0 +1,54 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+.env
+.env.*
+!.env.example
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.log
+*.bak
+
+# Legacy SQLite knowledge-store artifacts from the removed backend
+**/unified_vulnerabilities.sqlite
+**/unified_vulnerabilities.sqlite-journal
+**/unified_vulnerabilities.sqlite-wal
+**/unified_vulnerabilities.sqlite-shm
+
+# Data (keep structure, ignore large scan files)
+data/*
+!data/.gitkeep
+demo_data/
+
+# Reports (optional - uncomment to exclude reports from git)
+# reports/*.html
+# !reports/.gitkeep
+
+# Cleanup script (optional - remove after first use)
+cleanup_legacy.sh

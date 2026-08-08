@@ -1,0 +1,20 @@
+[project]
+name = "vuln-manager"
+version = "0.1.0"
+description = "Production-oriented vulnerability scanning pipeline with scanner-native normalized findings."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "httpx[http2]>=0.27.0",
+    "python-dotenv>=1.0.0",
+    "pyyaml>=6.0",
+    "uvicorn>=0.30.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+]
+
+[tool.uv]
+package = false

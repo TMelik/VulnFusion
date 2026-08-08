@@ -1,0 +1,73 @@
+{
+  "target": "https://savageofsevan.com",
+  "run_id": "20260515_124340",
+  "run_folder": "data/savageofsevan_com/20260515_124340",
+  "generated_at": "2026-05-15T13:13:44.280067Z",
+  "summary": {
+    "stage_count": 7,
+    "statuses": {
+      "failed": 1,
+      "success": 5,
+      "skipped": 1
+    },
+    "total_duration_seconds": 1808.638809
+  },
+  "stages": [
+    {
+      "stage": "wapiti",
+      "start_time": "2026-05-15T12:43:40.101377Z",
+      "end_time": "2026-05-15T13:13:40.225349Z",
+      "duration_seconds": 1800.123945,
+      "status": "failed",
+      "note": "scanner=wapiti; target=https://savageofsevan.com; error=Scan timeout"
+    },
+    {
+      "stage": "normalization",
+      "start_time": "2026-05-15T13:13:40.226111Z",
+      "end_time": "2026-05-15T13:13:40.226154Z",
+      "duration_seconds": 3.6e-05,
+      "status": "success",
+      "note": "scanner=wapiti; target=https://savageofsevan.com; raw_findings=0; normalized_findings=0"
+    },
+    {
+      "stage": "llm_processing",
+      "start_time": "2026-05-15T13:13:44.278746Z",
+      "end_time": "2026-05-15T13:13:44.278848Z",
+      "duration_seconds": 9.9e-05,
+      "status": "success",
+      "note": "mode=llm; llm_calls=0; attempted=0; succeeded=0"
+    },
+    {
+      "stage": "deduplication",
+      "start_time": "2026-05-15T13:13:44.278722Z",
+      "end_time": "2026-05-15T13:13:44.278854Z",
+      "duration_seconds": 0.000115,
+      "status": "success",
+      "note": "duplicate_mode=llm; final_findings=0; merged_groups=0"
+    },
+    {
+      "stage": "comparison",
+      "start_time": "2026-05-15T13:13:44.278863Z",
+      "end_time": "2026-05-15T13:13:44.278866Z",
+      "duration_seconds": 2e-06,
+      "status": "skipped",
+      "note": "comparison not requested"
+    },
+    {
+      "stage": "report_generation",
+      "start_time": "2026-05-15T13:13:44.279592Z",
+      "end_time": "2026-05-15T13:13:44.280029Z",
+      "duration_seconds": 0.000431,
+      "status": "success",
+      "note": "output=data/savageofsevan_com/20260515_124340/report.html"
+    },
+    {
+      "stage": "total_workflow",
+      "start_time": "2026-05-15T12:43:35.641220Z",
+      "end_time": "2026-05-15T13:13:44.280050Z",
+      "duration_seconds": 1808.638809,
+      "status": "success",
+      "note": "target=https://savageofsevan.com; scanner=wapiti; findings=0"
+    }
+  ]
+}

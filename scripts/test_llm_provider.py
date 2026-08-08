@@ -177,6 +177,11 @@ def _safe_comparison_record(record: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "comparison_status": record.get("comparison_status"),
         "llm_decision": record.get("llm_decision"),
+        "merge_approved": bool(record.get("merge_approved")),
+        "confidence": record.get("confidence"),
+        "reason": record.get("reason"),
+        "canonical_title": record.get("canonical_title"),
+        "needs_review": bool(record.get("needs_review")),
         "sent_to_llm": bool(record.get("sent_to_llm")),
         "used_cache": bool(record.get("used_cache")),
         "provider_request_kind": record.get("provider_request_kind"),

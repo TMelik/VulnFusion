@@ -164,3 +164,48 @@ def test_sanitize_results_for_export_preserves_scanner_data_and_comparison_label
     assert changed["status"] == "CHANGED"
     assert changed["changed_fields"] == ["severity"]
     assert "change_details" not in changed
+
+
+def test_sanitize_results_for_export_preserves_only_safe_structured_correlation():
+    correlation = {
+        "status": "merged",
+        "source": "llm",
+        "confidence": 0.92,
+        "reason": "Same endpoint, method and vulnerable parameter",
+        "canonical_title": "SQL Injection in application lookup",
+        "needs_review": True,
+        "review_candidates": [
+            {
+                "finding_id": "finding-b",
+                "vulnerability_name": "Potential SQL Injection",
+                "scanners": ["wapiti"],
+                "confidence": 0.81,
+                "reason": "Same path but weaker parameter evidence",
+                "canonical_title": "Potential SQL Injection in lookup",
+                "provider_payload": {"must": "not leak"},
+            }
+        ],
+        "raw_response": "must not leak",
+    }
+    exported = sanitize_results_for_export(
+        {"all_findings": [_finding(correlation=correlation)]}
+    )
+
+    assert exported["all_findings"][0]["correlation"] == {
+        "status": "merged",
+        "source": "llm",
+        "confidence": 0.92,
+        "reason": "Same endpoint, method and vulnerable parameter",
+        "canonical_title": "SQL Injection in application lookup",
+        "needs_review": True,
+        "review_candidates": [
+            {
+                "finding_id": "finding-b",
+                "vulnerability_name": "Potential SQL Injection",
+                "scanners": ["wapiti"],
+                "confidence": 0.81,
+                "reason": "Same path but weaker parameter evidence",
+                "canonical_title": "Potential SQL Injection in lookup",
+            }
+        ],
+    }

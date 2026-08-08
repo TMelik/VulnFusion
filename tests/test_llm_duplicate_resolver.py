@@ -7,12 +7,14 @@ import pytest
 import main
 import utils.llm_duplicate_resolver as llm_duplicate_resolver
 from utils.llm_duplicate_resolver import (
+    LLMDuplicateDecision,
     LLMProviderError,
     LLMDuplicateConfig,
     LLMDuplicateResolver,
     OpenAICompatibleLLMClient,
     build_llm_request_body,
     findings_share_same_target,
+    parse_llm_duplicate_decision,
     parse_llm_yes_no_response,
 )
 from utils.unified_vuln_db import UnifiedVulnerabilityDatabase
@@ -86,8 +88,29 @@ class FakeLLMClient:
         if self.error is not None:
             raise self.error
         key = tuple(sorted((finding_a["vulnerability_name"], finding_b["vulnerability_name"])))
-        decision = self.decision_by_pair.get(key, "yes")
-        response_payload = {"choices": [{"message": {"content": decision}}]}
+        scanner_key = tuple(sorted((finding_a["meta"]["scanner"], finding_b["meta"]["scanner"])))
+        configured = self.decision_by_pair.get(key)
+        if configured is None:
+            configured = self.decision_by_pair.get(scanner_key, "yes")
+        if isinstance(configured, LLMDuplicateDecision):
+            decision = configured
+        elif isinstance(configured, dict):
+            decision = LLMDuplicateDecision(**configured)
+        else:
+            decision = LLMDuplicateDecision(
+                same_vulnerability=configured == "yes",
+                confidence=0.95,
+                reason="Same concrete vulnerability anchors" if configured == "yes" else "Different vulnerability instances",
+                canonical_title=key[0],
+            )
+        decision_payload = {
+            "same_vulnerability": decision.same_vulnerability,
+            "confidence": decision.confidence,
+            "reason": decision.reason,
+            "canonical_title": decision.canonical_title,
+        }
+        content = json.dumps(decision_payload, sort_keys=True)
+        response_payload = {"choices": [{"message": {"content": content}}]}
         return decision, response_payload, json.dumps(response_payload), f"hash-{len(self.calls)}"
 
 
@@ -141,6 +164,24 @@ class ScriptedHTTPResponse:
         if self._json_data is None:
             raise ValueError("response body is not JSON")
         return self._json_data
+
+
+def _decision_content(
+    same_vulnerability: bool,
+    *,
+    confidence: float = 0.95,
+    reason: str = "Same concrete vulnerability anchors",
+    canonical_title: str = "Canonical vulnerability title",
+) -> str:
+    return json.dumps(
+        {
+            "same_vulnerability": same_vulnerability,
+            "confidence": confidence,
+            "reason": reason,
+            "canonical_title": canonical_title,
+        },
+        sort_keys=True,
+    )
 
 
 def _llm_config(*, api_key="super-secret-key-1234", debug=False) -> LLMDuplicateConfig:
@@ -384,16 +425,28 @@ def _install_recording_boundary_client(monkeypatch, *, decision: str = "yes"):
 
         def compare(self, finding_a, finding_b, *, runtime_cache=None):
             calls["compare"].append((finding_a["vulnerability_name"], finding_b["vulnerability_name"]))
+            structured = LLMDuplicateDecision(
+                same_vulnerability=decision == "yes",
+                confidence=0.95,
+                reason="Recording boundary decision",
+                canonical_title=finding_a["vulnerability_name"],
+            )
+            content = json.dumps({
+                "same_vulnerability": structured.same_vulnerability,
+                "confidence": structured.confidence,
+                "reason": structured.reason,
+                "canonical_title": structured.canonical_title,
+            })
             payload = {
-                "choices": [{"message": {"content": decision}}],
+                "choices": [{"message": {"content": content}}],
                 "_provider_request": {
                     "request_kind": "comparison",
                     "attempt_count": 1,
                     "retry_backoff_seconds": [],
                 },
             }
-            raw_response = json.dumps({"choices": [{"message": {"content": decision}}]})
-            return decision, payload, raw_response, f"request-{len(calls['compare'])}"
+            raw_response = json.dumps({"choices": [{"message": {"content": content}}]})
+            return structured, payload, raw_response, f"request-{len(calls['compare'])}"
 
     monkeypatch.setattr(llm_duplicate_resolver, "OpenAICompatibleLLMClient", _RecordingBoundaryClient)
     return calls
@@ -566,9 +619,20 @@ def test_provider_disabled_state_does_not_leak_across_runs_on_one_resolver():
                     http_status_code=403,
                     request_kind="comparison",
                 )
-            decision = "yes"
+            decision = LLMDuplicateDecision(
+                same_vulnerability=True,
+                confidence=0.95,
+                reason="Recovered structured decision",
+                canonical_title=finding_a["vulnerability_name"],
+            )
+            content = json.dumps({
+                "same_vulnerability": True,
+                "confidence": 0.95,
+                "reason": decision.reason,
+                "canonical_title": decision.canonical_title,
+            })
             response_payload = {
-                "choices": [{"message": {"content": decision}}],
+                "choices": [{"message": {"content": content}}],
                 "_provider_request": {
                     "request_kind": "comparison",
                     "attempt_count": 1,
@@ -636,9 +700,10 @@ def test_llm_request_format_is_compact_and_structured():
     )
 
     assert request["model"] == "test-model"
-    assert request["max_completion_tokens"] == 3
+    assert request["max_completion_tokens"] == 220
     assert "max_tokens" not in request
-    assert "exactly one word: yes or no" in request["messages"][0]["content"].lower()
+    assert "same_vulnerability" in request["messages"][0]["content"]
+    assert "endpoint/path" in request["messages"][0]["content"]
 
     payload = json.loads(request["messages"][1]["content"])
     assert payload["finding_a"]["scanner_name"] == "zap"
@@ -658,6 +723,33 @@ def test_parse_llm_yes_no_response_accepts_single_yes_no_token_only():
 
     with pytest.raises(ValueError):
         parse_llm_yes_no_response({"choices": [{"message": {"content": "answer: yes"}}]}, '{"choices":[{"message":{"content":"answer: yes"}}]}')
+
+
+def test_parse_structured_llm_duplicate_decision_is_strict():
+    payload = {
+        "same_vulnerability": True,
+        "confidence": 0.92,
+        "reason": "Same endpoint, method and parameter",
+        "canonical_title": "SQL Injection in lookup",
+    }
+    content = json.dumps(payload)
+    assert parse_llm_duplicate_decision(
+        {"choices": [{"message": {"content": content}}]}, "provider envelope"
+    ) == LLMDuplicateDecision(**payload)
+    assert parse_llm_duplicate_decision({}, f"```json\n{content}\n```") == LLMDuplicateDecision(**payload)
+
+    invalid_values = [
+        "yes",
+        f"Decision: {content}",
+        json.dumps({**payload, "extra": True}),
+        json.dumps({key: value for key, value in payload.items() if key != "reason"}),
+        json.dumps({**payload, "same_vulnerability": "true"}),
+        json.dumps({**payload, "confidence": 1}),
+        json.dumps({**payload, "confidence": 1.01}),
+    ]
+    for invalid in invalid_values:
+        with pytest.raises(ValueError):
+            parse_llm_duplicate_decision({}, invalid)
 
 
 def test_cache_reuses_saved_decision_with_reversed_pair_order(tmp_path):
@@ -778,6 +870,176 @@ def test_gray_zone_pair_can_merge_via_llm_and_preserve_provenance(tmp_path):
     assert results["duplicate_analysis"]["total_compared_pairs"] == 1
     assert results["duplicate_analysis"]["total_merged_groups"] == 1
     assert results["duplicate_analysis"]["final_merged_finding_count"] == 1
+
+
+def test_structured_confidence_threshold_controls_merge_and_preserves_title():
+    findings = _gray_zone_sqli_pair()
+    title_pair = ("SQL Injection", "SQL Injection in search parameter")
+    decision = {
+        "same_vulnerability": True,
+        "confidence": 0.85,
+        "reason": "Same endpoint and vulnerable input flow",
+        "canonical_title": "Canonical AI-only SQL injection title",
+    }
+    results = LLMDuplicateResolver(
+        _llm_config(),
+        client=FakeLLMClient(decision_by_pair={title_pair: decision}),
+    ).apply({"all_findings": findings, "summary": {}})
+
+    assert len(results["all_findings"]) == 1
+    merged = results["all_findings"][0]
+    comparison = results["llm_duplicate_comparisons"][0]
+    assert comparison["llm_decision"] == "yes"
+    assert comparison["merge_approved"] is True
+    assert comparison["confidence"] == 0.85
+    assert comparison["needs_review"] is False
+    assert merged["vulnerability_name"] in {
+        "SQL Injection",
+        "SQL Injection in search parameter",
+    }
+    assert merged["vulnerability_name"] != decision["canonical_title"]
+    assert merged["correlation"] == {
+        "status": "merged",
+        "source": "llm",
+        "confidence": 0.85,
+        "reason": decision["reason"],
+        "canonical_title": decision["canonical_title"],
+        "needs_review": False,
+        "review_candidates": [],
+    }
+
+
+def test_low_confidence_positive_decision_stays_separate_and_marks_both_for_review():
+    title_pair = ("SQL Injection", "SQL Injection in search parameter")
+    decision = {
+        "same_vulnerability": True,
+        "confidence": 0.84,
+        "reason": "Likely related, but the vulnerable parameters differ",
+        "canonical_title": "Potential SQL Injection in login inputs",
+    }
+    results = LLMDuplicateResolver(
+        _llm_config(),
+        client=FakeLLMClient(decision_by_pair={title_pair: decision}),
+    ).apply({"all_findings": _gray_zone_sqli_pair(), "summary": {}})
+
+    assert len(results["all_findings"]) == 2
+    comparison = results["llm_duplicate_comparisons"][0]
+    assert comparison["llm_decision"] == "yes"
+    assert comparison["merge_approved"] is False
+    assert comparison["needs_review"] is True
+    assert comparison["final_merge_result"] == "not_merged"
+    for finding in results["all_findings"]:
+        correlation = finding["correlation"]
+        assert correlation["status"] == "needs_review"
+        assert correlation["source"] == "llm"
+        assert correlation["confidence"] == 0.84
+        assert correlation["needs_review"] is True
+        assert len(correlation["review_candidates"]) == 1
+
+
+def test_negative_structured_decision_never_adds_review_metadata():
+    title_pair = ("SQL Injection", "SQL Injection in search parameter")
+    results = LLMDuplicateResolver(
+        _llm_config(),
+        client=FakeLLMClient(
+            decision_by_pair={
+                title_pair: {
+                    "same_vulnerability": False,
+                    "confidence": 0.99,
+                    "reason": "Different vulnerable parameters",
+                    "canonical_title": "",
+                }
+            }
+        ),
+    ).apply({"all_findings": _gray_zone_sqli_pair(), "summary": {}})
+
+    assert len(results["all_findings"]) == 2
+    comparison = results["llm_duplicate_comparisons"][0]
+    assert comparison["llm_decision"] == "no"
+    assert comparison["merge_approved"] is False
+    assert comparison["needs_review"] is False
+    assert all("correlation" not in finding for finding in results["all_findings"])
+
+
+def test_multi_finding_cluster_uses_most_conservative_approved_decision():
+    findings = [
+        _weak_endpoint_sqli("zap", parameter="q", raw_id="zap-q"),
+        _weak_endpoint_sqli("nuclei", parameter="account", raw_id="nuclei-account"),
+        _weak_endpoint_sqli("wapiti", parameter="user", raw_id="wapiti-user"),
+    ]
+    decisions = {
+        ("nuclei", "zap"): {
+            "same_vulnerability": True,
+            "confidence": 0.91,
+            "reason": "Pair one",
+            "canonical_title": "Title one",
+        },
+        ("wapiti", "zap"): {
+            "same_vulnerability": True,
+            "confidence": 0.87,
+            "reason": "Most conservative pair",
+            "canonical_title": "Conservative title",
+        },
+        ("nuclei", "wapiti"): {
+            "same_vulnerability": True,
+            "confidence": 0.93,
+            "reason": "Pair three",
+            "canonical_title": "Title three",
+        },
+    }
+    results = LLMDuplicateResolver(
+        _llm_config(), client=FakeLLMClient(decision_by_pair=decisions)
+    ).apply({"all_findings": findings, "summary": {}})
+
+    assert len(results["all_findings"]) == 1
+    correlation = results["all_findings"][0]["correlation"]
+    assert correlation["confidence"] == 0.87
+    assert correlation["reason"] == "Most conservative pair"
+    assert correlation["canonical_title"] == "Conservative title"
+
+
+def test_merged_cluster_keeps_merged_status_with_external_review_candidate():
+    findings = [
+        _weak_endpoint_sqli("zap", parameter="q", raw_id="zap-q"),
+        _weak_endpoint_sqli("nuclei", parameter="account", raw_id="nuclei-account"),
+        _weak_endpoint_sqli("wapiti", parameter="user", raw_id="wapiti-user"),
+    ]
+    decisions = {
+        ("nuclei", "zap"): {
+            "same_vulnerability": True,
+            "confidence": 0.94,
+            "reason": "Confirmed pair",
+            "canonical_title": "Confirmed title",
+        },
+        ("wapiti", "zap"): {
+            "same_vulnerability": True,
+            "confidence": 0.74,
+            "reason": "Uncertain external pair",
+            "canonical_title": "Review title",
+        },
+        ("nuclei", "wapiti"): {
+            "same_vulnerability": True,
+            "confidence": 0.76,
+            "reason": "Second uncertain external pair",
+            "canonical_title": "Second review title",
+        },
+    }
+    results = LLMDuplicateResolver(
+        _llm_config(), client=FakeLLMClient(decision_by_pair=decisions)
+    ).apply({"all_findings": findings, "summary": {}})
+
+    assert len(results["all_findings"]) == 2
+    merged = next(finding for finding in results["all_findings"] if finding.get("duplicate_count") == 2)
+    separate = next(finding for finding in results["all_findings"] if finding is not merged)
+    assert merged["correlation"]["status"] == "merged"
+    assert merged["correlation"]["confidence"] == 0.94
+    assert merged["correlation"]["needs_review"] is True
+    assert len(merged["correlation"]["review_candidates"]) == 1
+    assert merged["correlation"]["review_candidates"][0]["finding_id"] == separate["finding_id"]
+    assert separate["correlation"]["status"] == "needs_review"
+    assert separate["correlation"]["confidence"] == 0.74
+    assert len(separate["correlation"]["review_candidates"]) == 1
+    assert separate["correlation"]["review_candidates"][0]["finding_id"] == merged["finding_id"]
 
 
 def test_llm_merged_cluster_keeps_base_scanner_text_without_joining_source_prose(tmp_path):
@@ -1188,7 +1450,8 @@ def test_live_llm_trace_payload_is_only_persisted_when_debug_is_enabled(tmp_path
         comparison["llm_request_payload"]["finding_b"]["target"]["parameter"],
     } == {"q", "account"}
     assert comparison["raw_response"]
-    assert comparison["response_payload"]["choices"][0]["message"]["content"] == "yes"
+    content = json.loads(comparison["response_payload"]["choices"][0]["message"]["content"])
+    assert content["same_vulnerability"] is True
 
 
 def test_live_llm_success_is_sanitized_when_debug_is_disabled(tmp_path, duplicate_test_pairs):
@@ -1782,7 +2045,7 @@ def test_non_2xx_provider_response_is_captured_safely_in_yaml_trace(monkeypatch,
     assert provider_error["request_hash"] == comparison["request_hash"]
     assert provider_error["request_url"] == "https://llm.example/v1/chat/completions"
     assert provider_error["request_preview"]["model"] == "test-model"
-    assert provider_error["request_preview"]["max_completion_tokens"] == 3
+    assert provider_error["request_preview"]["max_completion_tokens"] == 220
     assert "Authorization" not in provider_error
     assert results["duplicate_analysis"]["provider_failure_categories"] == {"invalid_request": 1}
     assert results["duplicate_analysis"]["provider_disabled_mid_run"] is False
@@ -1838,14 +2101,14 @@ def test_permission_denied_provider_failure_is_visible_and_does_not_false_merge(
     [
         (
             ScriptedHTTPResponse(200, text="not-json-response", json_error=ValueError("response body is not JSON")),
-            "invalid duplicate yes/no response",
+            "invalid structured duplicate response",
         ),
         (
             ScriptedHTTPResponse(200, json_data={"choices": [{"message": {"content": "maybe"}}]}),
-            "invalid duplicate yes/no response",
+            "invalid structured duplicate response",
         ),
     ],
-    ids=["invalid_json", "malformed_yes_no"],
+        ids=["invalid_json", "malformed_structured_response"],
 )
 def test_unparseable_provider_success_responses_fail_safely_without_false_merge(
     monkeypatch,
@@ -1990,8 +2253,8 @@ def test_invalid_request_failure_does_not_disable_later_pairs(monkeypatch, tmp_p
     responses = [
         ScriptedHTTPResponse(200, json_data={"choices": [{"message": {"content": "yes"}}]}),
         ScriptedHTTPResponse(400, json_data=error_body, text=json.dumps(error_body, sort_keys=True)),
-        ScriptedHTTPResponse(200, json_data={"choices": [{"message": {"content": "yes"}}]}),
-        ScriptedHTTPResponse(200, json_data={"choices": [{"message": {"content": "no"}}]}),
+        ScriptedHTTPResponse(200, json_data={"choices": [{"message": {"content": _decision_content(True)}}]}),
+        ScriptedHTTPResponse(200, json_data={"choices": [{"message": {"content": _decision_content(False)}}]}),
     ]
     http_calls = []
     _install_scripted_http(monkeypatch, responses, http_calls)

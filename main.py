@@ -1933,6 +1933,8 @@ def main():
                 raise
             if llm_timing is not None:
                 analysis = results.get('duplicate_analysis') if isinstance(results, dict) else {}
+                if not isinstance(analysis, dict):
+                    analysis = {}
                 llm_note = (
                     f"mode=llm; llm_calls={analysis.get('llm_calls', 0)}; "
                     f"attempted={analysis.get('live_llm_comparisons_attempted', 0)}; "
@@ -1945,6 +1947,8 @@ def main():
                     note=llm_note,
                 )
             analysis = results.get('duplicate_analysis') if isinstance(results, dict) else {}
+            if not isinstance(analysis, dict):
+                analysis = {}
             _finish_timing_stage(
                 workflow_timer,
                 dedupe_timing,

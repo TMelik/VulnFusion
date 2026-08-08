@@ -1,7 +1,7 @@
 ---
 type: Pipeline Stage
 title: LLM Duplicate Resolution
-description: Cross-scanner duplicate finding resolution using a cheap pre-filter plus a strict yes/no LLM decision.
+description: Cross-scanner duplicate finding resolution using a cheap pre-filter plus a strict structured LLM decision.
 resource: utils/llm_duplicate_resolver.py
 tags: [vulnfusion, llm, dedupe]
 status: stable
@@ -24,13 +24,20 @@ flow (`--duplicate-mode off` disables this stage entirely).
    `parameter` (see [/schema.md](/schema.md)).
 2. A cheap pre-LLM filter checks overlap (shared CVE/CWE identifiers,
    normalized title similarity) before spending an API call.
-3. Only pairs that pass the filter are sent to the configured LLM endpoint,
-   which must answer exactly `yes` or `no`.
+3. Only pairs that pass the filter are sent to the configured LLM endpoint.
+   The provider must return one strict JSON object with
+   `same_vulnerability`, `confidence`, `reason`, and `canonical_title`.
+   A Markdown `json` fence is the only permitted wrapper.
 4. Decisions are cached in
    [/unified-vulnerability-db.md](/unified-vulnerability-db.md) (disable
    with `--no-llm-cache`).
-5. Merged findings preserve `source_findings` provenance; internal
-   comparison traces are not exported.
+5. A pair merges only when `same_vulnerability=true` and confidence is at
+   least `0.85`. Lower-confidence positive decisions remain separate and are
+   exposed as review candidates.
+6. Merged findings preserve `source_findings` provenance. Internal comparison
+   traces are not exported; the safe structured result is exported as
+   `correlation`. `canonical_title` is an AI recommendation and never replaces
+   the scanner-derived `vulnerability_name`.
 
 ## Configuration
 

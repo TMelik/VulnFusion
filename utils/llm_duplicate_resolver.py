@@ -6,10 +6,10 @@ owns the active cross-scanner duplicate flow:
 - suppress non-actionable adapter artifacts
 - identify same-target cross-scanner finding pairs
 - run one provider health check before live comparison batches
-- query an LLM with a strict yes/no prompt
+- query an LLM for a strict structured decision
 - capture safe provider diagnostics for failed calls
 - cache comparison results
-- merge only cross-scanner clusters confirmed by yes decisions
+- merge only cross-scanner clusters approved by high-confidence decisions
 """
 
 from __future__ import annotations
@@ -40,6 +40,7 @@ from utils.normalizer import (
 )
 from utils.result_summary import refresh_summary_counts
 from utils.schema import sort_by_severity
+from utils.secret_sanitizer import sanitize_secrets
 from utils.unified_vuln_db import UnifiedVulnerabilityDatabase, utcnow_iso
 
 
@@ -51,8 +52,9 @@ PROVIDER_RETRY_BACKOFF_CAP_SECONDS = 2.0
 # After two live 5xx/provider-unavailable failures in one run, stop spending
 # more duplicate-comparison calls on a provider that appears broadly unhealthy.
 PROVIDER_UNAVAILABLE_DISABLE_THRESHOLD = 2
-LLM_DUPLICATE_PROMPT_VERSION = 1
-LLM_DUPLICATE_CACHE_SEMANTICS_VERSION = 2
+LLM_DUPLICATE_PROMPT_VERSION = 2
+LLM_DUPLICATE_CACHE_SEMANTICS_VERSION = 3
+LLM_DUPLICATE_MERGE_CONFIDENCE_THRESHOLD = 0.85
 CHEAP_SIMILARITY_GENERIC_TITLE_TOKENS = {
     "configuration",
     "content",
@@ -84,6 +86,12 @@ LLM_DUPLICATE_COMPARISON_QUESTION = (
     "Do these two scanner findings describe the same underlying vulnerability "
     "on the same target?"
 )
+LLM_DUPLICATE_DECISION_FIELDS = {
+    "same_vulnerability",
+    "confidence",
+    "reason",
+    "canonical_title",
+}
 PROFILE_STAGE_KEYS = (
     "same_scanner_exact_premerge_seconds",
     "deterministic_cross_scanner_premerge_seconds",
@@ -171,6 +179,46 @@ class _ResolverRunContext:
     provider_state: Dict[str, Any] = field(default_factory=_initial_provider_state)
     profiler: _DedupStageProfiler = field(default_factory=_DedupStageProfiler)
     runtime_started_at: float = field(default_factory=time.perf_counter)
+
+
+@dataclass(frozen=True)
+class LLMDuplicateDecision:
+    """Strict provider decision for one duplicate candidate pair."""
+
+    same_vulnerability: bool
+    confidence: float
+    reason: str
+    canonical_title: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.same_vulnerability, bool):
+            raise TypeError("same_vulnerability must be boolean")
+        if isinstance(self.confidence, bool) or not isinstance(self.confidence, float):
+            raise TypeError("confidence must be a float")
+        if not 0.0 <= self.confidence <= 1.0:
+            raise ValueError("confidence must be between 0 and 1")
+        if not isinstance(self.reason, str):
+            raise TypeError("reason must be a string")
+        if not isinstance(self.canonical_title, str):
+            raise TypeError("canonical_title must be a string")
+
+    @property
+    def llm_decision(self) -> str:
+        """Return the legacy metric label retained for compatibility."""
+        return "yes" if self.same_vulnerability else "no"
+
+    @property
+    def merge_approved(self) -> bool:
+        """Return whether this decision is strong enough to merge."""
+        return bool(
+            self.same_vulnerability
+            and self.confidence >= LLM_DUPLICATE_MERGE_CONFIDENCE_THRESHOLD
+        )
+
+    @property
+    def needs_review(self) -> bool:
+        """Return whether a positive but uncertain decision needs review."""
+        return bool(self.same_vulnerability and not self.merge_approved)
 
 
 def _runtime_cache_get_or_set(
@@ -283,8 +331,8 @@ def _json_text(value: Any) -> str:
         return _safe_text(value)
 
 
-def _safe_request_preview(value: Any, *, max_text: int = 240) -> Any:
-    """Return a log-safe preview of a provider request payload."""
+def _truncate_request_preview(value: Any, *, max_text: int = 240) -> Any:
+    """Return a bounded preview after secret sanitization."""
     if isinstance(value, dict):
         preview: Dict[str, Any] = {}
         for key, item in value.items():
@@ -301,13 +349,18 @@ def _safe_request_preview(value: Any, *, max_text: int = 240) -> Any:
                     for message in item[:4]
                 ]
                 continue
-            preview[key] = _safe_request_preview(item, max_text=max_text)
+            preview[key] = _truncate_request_preview(item, max_text=max_text)
         return preview
     if isinstance(value, list):
-        return [_safe_request_preview(item, max_text=max_text) for item in value[:10]]
+        return [_truncate_request_preview(item, max_text=max_text) for item in value[:10]]
     if isinstance(value, str):
         return value[:max_text]
     return value
+
+
+def _safe_request_preview(value: Any, *, max_text: int = 240) -> Any:
+    """Return a secret-free, bounded provider request preview."""
+    return _truncate_request_preview(sanitize_secrets(value).value, max_text=max_text)
 
 
 def _response_json_or_none(response: Any) -> Any:
@@ -1474,19 +1527,26 @@ def build_llm_request_body(
         finding_b,
         runtime_cache=runtime_cache,
     )
+    payload = sanitize_secrets(payload).value
     return {
         "model": model_name,
         "temperature": 0,
-        "max_completion_tokens": 3,
+        "max_completion_tokens": 220,
         "messages": [
             {
                 "role": "system",
                 "content": (
                     "You compare two vulnerability scanner findings. "
-                    "Answer with exactly one word: yes or no. "
-                    "Say yes only when they describe the same underlying vulnerability on the same target. "
-                    "If the target context differs in a relevant way, answer no. "
-                    "Do not explain."
+                    "Return exactly one JSON object with exactly these fields: "
+                    "same_vulnerability (boolean), confidence (number from 0.0 to 1.0), "
+                    "reason (string), canonical_title (string). "
+                    "The object may be wrapped only in a Markdown ```json fence; emit no other text. "
+                    "Set same_vulnerability=true only when both findings describe the same underlying "
+                    "vulnerability instance on the same target. Base the decision on concrete instance "
+                    "anchors such as endpoint/path, parameter, HTTP method, port/service, CVE, or scanner "
+                    "identity (plugin/template/raw id). Relevant anchor conflicts require false. "
+                    "Confidence is your stated confidence in this decision. canonical_title is only a "
+                    "recommended shared title and must not invent unsupported details."
                 ),
             },
             {
@@ -1579,6 +1639,75 @@ def parse_llm_yes_no_response(response_payload: Dict[str, Any], raw_text: str) -
     raise ValueError(f"Invalid LLM duplicate response: {raw_text!r}")
 
 
+_JSON_FENCE_PATTERN = re.compile(
+    r"\A\s*```json\s*(\{.*\})\s*```\s*\Z",
+    flags=re.DOTALL | re.IGNORECASE,
+)
+
+
+def _duplicate_decision_response_text(
+    response_payload: Dict[str, Any],
+    raw_text: str,
+) -> str:
+    """Extract the single assistant response value from common provider envelopes."""
+    choices = response_payload.get("choices")
+    if isinstance(choices, list) and choices:
+        choice = choices[0]
+        if isinstance(choice, dict):
+            message = choice.get("message")
+            if isinstance(message, dict) and "content" in message:
+                return _extract_llm_text(message.get("content"))
+            if "text" in choice:
+                return _extract_llm_text(choice.get("text"))
+
+    if "output_text" in response_payload:
+        return _extract_llm_text(response_payload.get("output_text"))
+    return _extract_llm_text(raw_text)
+
+
+def parse_llm_duplicate_decision(
+    response_payload: Dict[str, Any],
+    raw_text: str,
+) -> LLMDuplicateDecision:
+    """Parse an exact structured decision, rejecting legacy or embellished output."""
+    text = _duplicate_decision_response_text(response_payload, raw_text).strip()
+    fence_match = _JSON_FENCE_PATTERN.fullmatch(text)
+    json_text = fence_match.group(1) if fence_match else text
+
+    try:
+        value = json.loads(json_text)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"Invalid structured LLM duplicate response: {text!r}") from exc
+
+    if not isinstance(value, dict) or set(value) != LLM_DUPLICATE_DECISION_FIELDS:
+        raise ValueError(
+            "Invalid structured LLM duplicate response: expected exactly "
+            f"{sorted(LLM_DUPLICATE_DECISION_FIELDS)!r}"
+        )
+
+    same_vulnerability = value["same_vulnerability"]
+    confidence = value["confidence"]
+    reason = value["reason"]
+    canonical_title = value["canonical_title"]
+    if not isinstance(same_vulnerability, bool):
+        raise ValueError("Invalid structured LLM duplicate response: same_vulnerability must be boolean")
+    if isinstance(confidence, bool) or not isinstance(confidence, float):
+        raise ValueError("Invalid structured LLM duplicate response: confidence must be a float")
+    if not 0.0 <= confidence <= 1.0:
+        raise ValueError("Invalid structured LLM duplicate response: confidence must be between 0 and 1")
+    if not isinstance(reason, str):
+        raise ValueError("Invalid structured LLM duplicate response: reason must be a string")
+    if not isinstance(canonical_title, str):
+        raise ValueError("Invalid structured LLM duplicate response: canonical_title must be a string")
+
+    return LLMDuplicateDecision(
+        same_vulnerability=same_vulnerability,
+        confidence=confidence,
+        reason=reason.strip(),
+        canonical_title=canonical_title.strip(),
+    )
+
+
 class OpenAICompatibleLLMClient:
     """Minimal OpenAI-compatible chat-completions client."""
 
@@ -1652,7 +1781,10 @@ class OpenAICompatibleLLMClient:
         request_kind: str,
     ) -> Tuple[Any, str, str, int, List[float]]:
         """Send one OpenAI-compatible chat completion request with bounded retries."""
-        request_hash = self._request_hash(request_body)
+        safe_request = sanitize_secrets(request_body).value
+        if not isinstance(safe_request, dict):
+            raise ValueError("LLM request body must be a JSON object.")
+        request_hash = self._request_hash(safe_request)
         retry_backoff_seconds: List[float] = []
         max_attempts = 1 + PROVIDER_MAX_RETRIES
         request_url = str(self.config.api_url)
@@ -1662,7 +1794,7 @@ class OpenAICompatibleLLMClient:
                 with httpx.Client(timeout=self.config.timeout_seconds) as client:
                     response = client.post(
                         request_url,
-                        json=request_body,
+                        json=safe_request,
                         headers=self._headers(),
                     )
             except Exception as exc:
@@ -1672,14 +1804,21 @@ class OpenAICompatibleLLMClient:
                     request_hash=request_hash,
                 ) from exc
 
-            response_text = _safe_text(getattr(response, "text", ""))
-            response_json = _response_json_or_none(response)
+            parsed_response = _response_json_or_none(response)
+            if parsed_response is not None:
+                response_json = sanitize_secrets(parsed_response).value
+                response_text = _json_text(response_json)
+            else:
+                response_json = None
+                response_text = _safe_text(
+                    sanitize_secrets(_safe_text(getattr(response, "text", ""))).value
+                )
             status_code = getattr(response, "status_code", None)
             if isinstance(status_code, int) and status_code >= 400:
                 provider_error = self._build_retryable_provider_error(
                     request_kind=request_kind,
                     request_hash=request_hash,
-                    request_body=request_body,
+                    request_body=safe_request,
                     attempt_count=attempt_count,
                     retry_backoff_seconds=retry_backoff_seconds,
                     http_status_code=status_code,
@@ -1748,7 +1887,7 @@ class OpenAICompatibleLLMClient:
         finding_b: Dict[str, Any],
         *,
         runtime_cache: Optional["_FindingRuntimeCache"] = None,
-    ) -> Tuple[str, Dict[str, Any], str, str]:
+    ) -> Tuple[LLMDuplicateDecision, Dict[str, Any], str, str]:
         """Submit one duplicate-comparison request and return the parsed decision."""
         validation_error = self.config.validation_error()
         if validation_error:
@@ -1766,10 +1905,10 @@ class OpenAICompatibleLLMClient:
         )
         parsed_payload = response_payload if isinstance(response_payload, dict) else {}
         try:
-            decision = parse_llm_yes_no_response(parsed_payload, raw_text)
+            decision = parse_llm_duplicate_decision(parsed_payload, raw_text)
         except ValueError as exc:
             raise LLMProviderError(
-                message="unknown_provider_error: invalid duplicate yes/no response",
+                message="unknown_provider_error: invalid structured duplicate response",
                 category="unknown_provider_error",
                 response_text=raw_text,
                 response_json=response_payload,
@@ -1847,6 +1986,44 @@ def _comparison_cache_key(
     }
     cache_key = _sha256_text(json.dumps(payload, sort_keys=True, ensure_ascii=True))
     return pair_key, cache_key
+
+
+def _decision_from_record(record: Mapping[str, Any]) -> Optional[LLMDuplicateDecision]:
+    """Rehydrate a structured decision from a trace/cache record when valid."""
+    same_vulnerability = record.get("same_vulnerability")
+    confidence = record.get("confidence")
+    reason = record.get("reason")
+    canonical_title = record.get("canonical_title")
+    if not isinstance(same_vulnerability, bool):
+        return None
+    if isinstance(confidence, bool) or not isinstance(confidence, float):
+        return None
+    if not 0.0 <= confidence <= 1.0:
+        return None
+    if not isinstance(reason, str) or not isinstance(canonical_title, str):
+        return None
+    return LLMDuplicateDecision(
+        same_vulnerability=same_vulnerability,
+        confidence=confidence,
+        reason=reason,
+        canonical_title=canonical_title,
+    )
+
+
+def _conservative_decision_record(
+    records: Iterable[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """Return the lowest-confidence valid structured record deterministically."""
+    valid = [record for record in records if _decision_from_record(record) is not None]
+    if not valid:
+        return None
+    return min(
+        valid,
+        key=lambda record: (
+            float(record["confidence"]),
+            str(record.get("pair_key") or ""),
+        ),
+    )
 
 
 def _build_source_record(finding: Dict[str, Any]) -> Dict[str, Any]:
@@ -2133,6 +2310,17 @@ def _merge_llm_cluster(
         "comparison_cache_keys": [record.get("cache_key") for record in comparison_records if record.get("cache_key")],
         "llm_decision": "yes",
     }
+    conservative_record = _conservative_decision_record(comparison_records)
+    if conservative_record is not None:
+        base["correlation"] = {
+            "status": "merged",
+            "source": "llm",
+            "confidence": conservative_record["confidence"],
+            "reason": conservative_record["reason"],
+            "canonical_title": conservative_record["canonical_title"],
+            "needs_review": False,
+            "review_candidates": [],
+        }
     return base
 
 
@@ -2201,6 +2389,96 @@ def _annotate_final_merge_results(
         else:
             record["final_merge_result"] = "not_merged"
             record["merged_finding_id"] = None
+
+
+def _annotate_structured_correlations(
+    materialized_members: List[Tuple[Dict[str, Any], List[Dict[str, Any]]]],
+    comparison_records: List[Dict[str, Any]],
+) -> None:
+    """Attach public review metadata without exposing provider trace internals."""
+    finding_by_member_id: Dict[str, Dict[str, Any]] = {}
+    for finding, members in materialized_members:
+        for member in members:
+            member_id = member.get("finding_id")
+            if member_id is not None:
+                finding_by_member_id[str(member_id)] = finding
+
+    review_records = [
+        record
+        for record in comparison_records
+        if record.get("needs_review") is True
+        and record.get("comparison_status") in {"compared_with_llm", "cached"}
+        and _decision_from_record(record) is not None
+    ]
+
+    for record in sorted(review_records, key=lambda item: str(item.get("pair_key") or "")):
+        left = finding_by_member_id.get(str(record.get("compared_finding_a_id") or ""))
+        right = finding_by_member_id.get(str(record.get("compared_finding_b_id") or ""))
+        if left is None or right is None or left is right:
+            continue
+
+        for finding, candidate in ((left, right), (right, left)):
+            correlation = finding.get("correlation")
+            if not isinstance(correlation, dict) or correlation.get("source") != "llm":
+                correlation = {
+                    "status": "needs_review",
+                    "source": "llm",
+                    "confidence": record["confidence"],
+                    "reason": record["reason"],
+                    "canonical_title": record["canonical_title"],
+                    "needs_review": True,
+                    "review_candidates": [],
+                }
+                finding["correlation"] = correlation
+            else:
+                correlation["needs_review"] = True
+                current_confidence = correlation.get("confidence")
+                if (
+                    correlation.get("status") != "merged"
+                    and isinstance(current_confidence, (int, float))
+                    and float(record["confidence"]) < float(current_confidence)
+                ):
+                    correlation["confidence"] = record["confidence"]
+                    correlation["reason"] = record["reason"]
+                    correlation["canonical_title"] = record["canonical_title"]
+
+            candidates = correlation.setdefault("review_candidates", [])
+            candidate_entry = {
+                "finding_id": candidate.get("finding_id"),
+                "vulnerability_name": _safe_text(candidate.get("vulnerability_name")),
+                "scanners": sorted(_finding_scanners(candidate)),
+                "confidence": record["confidence"],
+                "reason": record["reason"],
+                "canonical_title": record["canonical_title"],
+            }
+            existing_index = next(
+                (
+                    index
+                    for index, existing in enumerate(candidates)
+                    if existing.get("finding_id") == candidate_entry["finding_id"]
+                ),
+                None,
+            )
+            if existing_index is None:
+                candidates.append(candidate_entry)
+            elif float(candidate_entry["confidence"]) < float(
+                candidates[existing_index].get("confidence") or 0.0
+            ):
+                candidates[existing_index] = candidate_entry
+
+    for finding, _members in materialized_members:
+        correlation = finding.get("correlation")
+        if not isinstance(correlation, dict):
+            continue
+        candidates = correlation.get("review_candidates")
+        if isinstance(candidates, list):
+            candidates.sort(
+                key=lambda candidate: (
+                    str(candidate.get("finding_id") or ""),
+                    float(candidate.get("confidence") or 0.0),
+                    str(candidate.get("canonical_title") or ""),
+                )
+            )
 
 
 def _build_duplicate_analysis(
@@ -2475,6 +2753,12 @@ class LLMDuplicateResolver:
                 else None
             ),
             "llm_decision": None,
+            "same_vulnerability": None,
+            "merge_approved": False,
+            "confidence": None,
+            "reason": None,
+            "canonical_title": None,
+            "needs_review": False,
             "compared_at": None,
             "model_name": self.config.model_name,
             "request_hash": None,
@@ -2557,10 +2841,23 @@ class LLMDuplicateResolver:
 
         if self.database and self.config.cache_enabled:
             cached = self.database.get_llm_comparison(cache_key)
-            if cached and cached.get("llm_decision") in {"yes", "no"}:
+            cached_decision = _decision_from_record(cached) if cached else None
+            cache_versions_match = bool(
+                cached
+                and cached.get("prompt_version") == LLM_DUPLICATE_PROMPT_VERSION
+                and cached.get("comparison_semantics_version")
+                == LLM_DUPLICATE_CACHE_SEMANTICS_VERSION
+            )
+            if cached_decision is not None and cache_versions_match:
                 cached_record = dict(record)
                 for field in (
                     "llm_decision",
+                    "same_vulnerability",
+                    "merge_approved",
+                    "confidence",
+                    "reason",
+                    "canonical_title",
+                    "needs_review",
                     "compared_at",
                     "request_hash",
                     "error_message",
@@ -2576,6 +2873,17 @@ class LLMDuplicateResolver:
                 ):
                     if field in cached:
                         cached_record[field] = copy.deepcopy(cached[field])
+                cached_record.update(
+                    {
+                        "llm_decision": cached_decision.llm_decision,
+                        "same_vulnerability": cached_decision.same_vulnerability,
+                        "merge_approved": cached_decision.merge_approved,
+                        "confidence": cached_decision.confidence,
+                        "reason": cached_decision.reason,
+                        "canonical_title": cached_decision.canonical_title,
+                        "needs_review": cached_decision.needs_review,
+                    }
+                )
                 cached_record["raw_response"] = (
                     copy.deepcopy(cached.get("raw_response"))
                     if self.config.debug
@@ -2621,11 +2929,19 @@ class LLMDuplicateResolver:
                 ordered_b,
                 runtime_cache=run_context.runtime_cache,
             )
+            if not isinstance(decision, LLMDuplicateDecision):
+                raise ValueError("LLM client returned a non-structured duplicate decision")
             run_context.provider_state["live_succeeded"] += 1
             record.update(
                 {
                     "comparison_status": "compared_with_llm",
-                    "llm_decision": decision,
+                    "llm_decision": decision.llm_decision,
+                    "same_vulnerability": decision.same_vulnerability,
+                    "merge_approved": decision.merge_approved,
+                    "confidence": decision.confidence,
+                    "reason": decision.reason,
+                    "canonical_title": decision.canonical_title,
+                    "needs_review": decision.needs_review,
                     "compared_at": compared_at,
                     "request_hash": request_hash,
                     "provider_request_kind": "comparison",
@@ -2731,6 +3047,7 @@ class LLMDuplicateResolver:
                     {
                         "pair_key": pair_key,
                         "llm_decision": "yes",
+                        "merge_approved": True,
                         "comparison_status": "deterministic_premerge",
                     }
                 )
@@ -2801,11 +3118,11 @@ class LLMDuplicateResolver:
         findings: List[Dict[str, Any]],
         comparison_records: List[Dict[str, Any]],
     ) -> List[List[Dict[str, Any]]]:
-        """Build conservative duplicate clusters from yes decisions only."""
+        """Build conservative duplicate clusters from approved decisions only."""
         yes_lookup = {
             record["pair_key"]: record
             for record in comparison_records
-            if record.get("llm_decision") == "yes"
+            if record.get("merge_approved") is True
             and record.get("comparison_status") in {"cached", "compared_with_llm", "deterministic_premerge"}
         }
 
@@ -3024,11 +3341,12 @@ class LLMDuplicateResolver:
         comparison_lookup = {
             record["pair_key"]: record
             for record in comparison_records
-            if record.get("llm_decision") == "yes"
+            if record.get("merge_approved") is True
             and record.get("comparison_status") in {"compared_with_llm", "cached"}
         }
 
         merged_findings: List[Dict[str, Any]] = []
+        materialized_members: List[Tuple[Dict[str, Any], List[Dict[str, Any]]]] = []
         for cluster in clusters:
             cluster = sorted(
                 cluster,
@@ -3036,6 +3354,7 @@ class LLMDuplicateResolver:
             )
             if len(cluster) == 1:
                 merged_findings.append(cluster[0])
+                materialized_members.append((cluster[0], list(cluster)))
                 continue
             cluster_records: List[Dict[str, Any]] = []
             for left, right in combinations(cluster, 2):
@@ -3043,7 +3362,9 @@ class LLMDuplicateResolver:
                 record = comparison_lookup.get(pair_key)
                 if record is not None:
                     cluster_records.append(record)
-            merged_findings.append(_merge_llm_cluster(cluster, cluster_records))
+            merged_finding = _merge_llm_cluster(cluster, cluster_records)
+            merged_findings.append(merged_finding)
+            materialized_members.append((merged_finding, list(cluster)))
 
         if self.config.mode == "llm":
             merged_findings = sorted(
@@ -3053,6 +3374,7 @@ class LLMDuplicateResolver:
 
         results["all_findings"] = sort_by_severity(merged_findings)
         _annotate_final_merge_results(comparison_records, merged_findings)
+        _annotate_structured_correlations(materialized_members, comparison_records)
         run_context.profiler.add(
             "final_merge_materialization_seconds",
             time.perf_counter() - stage_started_at,

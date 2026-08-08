@@ -11,6 +11,8 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any, Dict, Iterable, List
 
+from utils.secret_sanitizer import sanitize_secrets
+
 
 _FORBIDDEN_RESULT_KEYS = {
     "asset_criticality",
@@ -118,6 +120,80 @@ def _sanitize_source_record(record: Any) -> Dict[str, Any] | None:
     return cleaned
 
 
+def _safe_correlation_text(value: Any, *, limit: int = 1000) -> str:
+    """Return bounded display text for the public correlation contract."""
+    return str(value).strip()[:limit] if isinstance(value, str) else ""
+
+
+def _sanitize_correlation(value: Any) -> Dict[str, Any] | None:
+    """Whitelist the structured LLM correlation shape used by the UI."""
+    if not isinstance(value, dict):
+        return None
+    status = value.get("status")
+    if status not in {"merged", "needs_review"} or value.get("source") != "llm":
+        return None
+    confidence = value.get("confidence")
+    if isinstance(confidence, bool) or not isinstance(confidence, (int, float)):
+        return None
+    confidence = float(confidence)
+    if not 0.0 <= confidence <= 1.0:
+        return None
+
+    review_candidates: List[Dict[str, Any]] = []
+    candidates = value.get("review_candidates")
+    if isinstance(candidates, list):
+        for candidate in candidates:
+            if not isinstance(candidate, dict):
+                continue
+            candidate_confidence = candidate.get("confidence")
+            if (
+                isinstance(candidate_confidence, bool)
+                or not isinstance(candidate_confidence, (int, float))
+                or not 0.0 <= float(candidate_confidence) <= 1.0
+            ):
+                continue
+            scanners = candidate.get("scanners")
+            review_candidates.append(
+                {
+                    "finding_id": _safe_correlation_text(candidate.get("finding_id"), limit=200),
+                    "vulnerability_name": _safe_correlation_text(
+                        candidate.get("vulnerability_name"), limit=500
+                    ),
+                    "scanners": sorted(
+                        {
+                            _safe_correlation_text(scanner, limit=100)
+                            for scanner in scanners
+                            if isinstance(scanner, str) and scanner.strip()
+                        }
+                    )
+                    if isinstance(scanners, list)
+                    else [],
+                    "confidence": float(candidate_confidence),
+                    "reason": _safe_correlation_text(candidate.get("reason")),
+                    "canonical_title": _safe_correlation_text(
+                        candidate.get("canonical_title"), limit=500
+                    ),
+                }
+            )
+
+    review_candidates.sort(
+        key=lambda candidate: (
+            candidate["finding_id"],
+            candidate["confidence"],
+            candidate["canonical_title"],
+        )
+    )
+    return {
+        "status": status,
+        "source": "llm",
+        "confidence": confidence,
+        "reason": _safe_correlation_text(value.get("reason")),
+        "canonical_title": _safe_correlation_text(value.get("canonical_title"), limit=500),
+        "needs_review": bool(value.get("needs_review")),
+        "review_candidates": review_candidates,
+    }
+
+
 def sanitize_finding_for_export(finding: Any) -> Dict[str, Any] | Any:
     """Strip non-scanner-derived fields from one externally visible finding."""
     if not isinstance(finding, dict):
@@ -128,6 +204,13 @@ def sanitize_finding_for_export(finding: Any) -> Dict[str, Any] | Any:
         cleaned.pop(key, None)
 
     cleaned["meta"] = _sanitize_meta(cleaned.get("meta"))
+
+    if "correlation" in cleaned:
+        correlation = _sanitize_correlation(cleaned.get("correlation"))
+        if correlation is None:
+            cleaned.pop("correlation", None)
+        else:
+            cleaned["correlation"] = correlation
 
     source_findings = cleaned.get("source_findings")
     if isinstance(source_findings, list):
@@ -173,7 +256,8 @@ def sanitize_results_for_export(results: Dict[str, Any]) -> Dict[str, Any]:
         if key in export:
             export[key] = _sanitize_finding_list(export.get(key))
 
-    return export
+    sanitized = sanitize_secrets(export).value
+    return sanitized if isinstance(sanitized, dict) else {}
 
 
 def iter_forbidden_export_fields(results: Dict[str, Any]) -> Iterable[str]:

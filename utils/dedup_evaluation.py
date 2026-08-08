@@ -10,7 +10,11 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Sequence, Tuple
 
 from utils.comparator import compare_scans
-from utils.llm_duplicate_resolver import LLMDuplicateConfig, LLMDuplicateResolver
+from utils.llm_duplicate_resolver import (
+    LLMDuplicateConfig,
+    LLMDuplicateDecision,
+    LLMDuplicateResolver,
+)
 
 
 DEFAULT_DEDUP_DATASET_PATH = (
@@ -125,7 +129,7 @@ class OracleLLMClient:
         finding_b: Dict[str, Any],
         *,
         runtime_cache: Any = None,
-    ) -> Tuple[str, Dict[str, Any], str, str]:
+    ) -> Tuple[LLMDuplicateDecision, Dict[str, Any], str, str]:
         compared_ids = tuple(
             sorted(
                 _ordered_unique([
@@ -136,13 +140,23 @@ class OracleLLMClient:
         )
         self.compare_calls.append(compared_ids)
         compared_set = set(compared_ids)
-        decision = (
-            "yes"
-            if any(compared_set.issubset(group) for group in self.duplicate_groups)
-            else "no"
+        same_vulnerability = any(
+            compared_set.issubset(group) for group in self.duplicate_groups
         )
+        decision = LLMDuplicateDecision(
+            same_vulnerability=same_vulnerability,
+            confidence=0.99,
+            reason="Oracle fixture grouping",
+            canonical_title=str(finding_a.get("vulnerability_name") or ""),
+        )
+        content = json.dumps({
+            "same_vulnerability": decision.same_vulnerability,
+            "confidence": decision.confidence,
+            "reason": decision.reason,
+            "canonical_title": decision.canonical_title,
+        }, sort_keys=True)
         response_payload = {
-            "choices": [{"message": {"content": decision}}],
+            "choices": [{"message": {"content": content}}],
             "_provider_request": {
                 "request_kind": "comparison",
                 "attempt_count": 1,
@@ -150,7 +164,7 @@ class OracleLLMClient:
             },
         }
         raw_response = json.dumps(
-            {"choices": [{"message": {"content": decision}}]},
+            {"choices": [{"message": {"content": content}}]},
             sort_keys=True,
             ensure_ascii=True,
         )

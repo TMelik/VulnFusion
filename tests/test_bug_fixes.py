@@ -77,6 +77,8 @@ class TestBug01RunScannerEnabled:
         orc.http2_adapter_mode = "auto"
         orc._transport_probe_cache = {}
         orc._auto_http2_adapters = {}
+        from utils.timing import WorkflowTimer
+        orc.timing = WorkflowTimer()
         # Register a mock scanner that is "available"
         mock_scanner = MagicMock()
         mock_scanner.is_available.return_value = True

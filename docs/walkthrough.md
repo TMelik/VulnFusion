@@ -6,7 +6,7 @@ VulnFusion keeps scanner evidence as the source of truth, then adds two clearly
 separated layers:
 
 - deterministic correlation and risk prioritization;
-- advisory LLM applicability and remediation guidance.
+- advisory LLM applicability, summary, priority, and remediation guidance.
 
 The LLM cannot delete a finding, replace scanner evidence, or change
 `risk_score`/`priority`.
@@ -50,6 +50,10 @@ unconfirmed proposals do not. Site context never changes duplicate identity:
 correlation still depends on technical instance anchors such as path,
 parameter, method, port/service, CVE, and scanner identity.
 
+The local web workflow (`python main.py --ui`) persists project settings in the
+same per-site bundle. New or stale projects pause at the context review before
+launching the selected scanner checkboxes; Safe and Full presets are available.
+
 ## 2. Scanning and normalization
 
 The selected scanners produce native output, and their normalizers convert it
@@ -90,12 +94,15 @@ site context are then applied before the deterministic risk scorer creates:
 ## 4. Advisory finding analysis
 
 When the same LLM provider is configured, VulnFusion automatically analyzes
-the highest-priority final findings, up to 10 by default. Override the cap with
+the highest-priority final findings, up to 25 by default. Override the cap with
 `--ai-analysis-limit`; disable this layer with `--no-ai-analysis`.
 
 The strict response adds:
 
 - `applicability.status`, `confidence`, `reason`, and cited `evidence_ids`;
+- `ai_priority.recommended_priority`, confidence, rationale, cited evidence,
+  and the confirmed context revision;
+- `ai_summary.description`, business impact, and cited evidence;
 - `ai_remediation.steps` and `verification`.
 
 Decisions are cached by finding evidence, model, prompt/schema semantics, and

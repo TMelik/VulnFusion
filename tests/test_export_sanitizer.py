@@ -225,6 +225,18 @@ def test_sanitize_results_preserves_strict_ai_advice_and_safe_summary():
             "steps": ["Use parameterized queries."],
             "verification": ["Repeat the request with safe SQL metacharacters."],
         },
+        ai_priority={
+            "recommended_priority": "P1",
+            "confidence": 0.82,
+            "reason": "The confirmed production workflow processes sensitive records.",
+            "evidence_ids": ["finding-description", "site-risk-context"],
+            "context_revision": "revision-1",
+        },
+        ai_summary={
+            "description": "The endpoint may interpolate untrusted input into a database query.",
+            "business_impact": "Exploitation could disclose or alter sensitive records.",
+            "evidence_ids": ["finding-description", "site-risk-context"],
+        },
     )
     exported = sanitize_results_for_export(
         {
@@ -255,6 +267,8 @@ def test_sanitize_results_preserves_strict_ai_advice_and_safe_summary():
     assert cleaned["ai_analysis_status"] == "completed"
     assert cleaned["applicability"]["confidence"] == 0.88
     assert cleaned["ai_remediation"]["steps"] == ["Use parameterized queries."]
+    assert cleaned["ai_priority"]["recommended_priority"] == "P1"
+    assert cleaned["ai_summary"]["business_impact"]
     assert exported["ai_analysis_summary"] == {
         "status": "completed",
         "model": "demo-model",

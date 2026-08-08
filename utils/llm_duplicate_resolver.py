@@ -532,10 +532,10 @@ def resolve_llm_duplicate_provider_settings(
         or _safe_text(env_map.get("VULN_MANAGER_LLM_API_KEY"))
     ) or None
 
-    api_url = (
+    api_url = normalize_llm_provider_url(
         _safe_text(cli_api_url)
         or _safe_text(env_map.get("VULN_MANAGER_LLM_API_URL"))
-    ) or None
+    )
 
     model_name = (
         _safe_text(cli_model_name)
@@ -547,6 +547,16 @@ def resolve_llm_duplicate_provider_settings(
         "api_key": api_key,
         "model_name": model_name,
     }
+
+
+def normalize_llm_provider_url(api_url: Optional[str]) -> Optional[str]:
+    """Normalize a provider base URL into a chat-completions endpoint."""
+    normalized = _safe_text(api_url).rstrip("/")
+    if not normalized:
+        return None
+    if normalized.endswith("/chat/completions"):
+        return normalized
+    return f"{normalized}/chat/completions"
 
 
 def _sha256_text(text: str) -> str:
@@ -1711,8 +1721,14 @@ def parse_llm_duplicate_decision(
 class OpenAICompatibleLLMClient:
     """Minimal OpenAI-compatible chat-completions client."""
 
-    def __init__(self, config: LLMDuplicateConfig):
+    def __init__(
+        self,
+        config: LLMDuplicateConfig,
+        *,
+        transport: Optional[httpx.BaseTransport] = None,
+    ):
         self.config = config
+        self.transport = transport
 
     def _request_hash(self, request_body: Dict[str, Any]) -> str:
         """Return a stable request hash for one provider call."""
@@ -1791,7 +1807,10 @@ class OpenAICompatibleLLMClient:
 
         for attempt_count in range(1, max_attempts + 1):
             try:
-                with httpx.Client(timeout=self.config.timeout_seconds) as client:
+                with httpx.Client(
+                    timeout=self.config.timeout_seconds,
+                    transport=self.transport,
+                ) as client:
                     response = client.post(
                         request_url,
                         json=safe_request,

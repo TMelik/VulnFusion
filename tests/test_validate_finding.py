@@ -183,6 +183,18 @@ def test_public_ai_advisory_fields_pass_validation():
                 "steps": ["Use parameterized queries."],
                 "verification": ["Repeat the request with a safe SQL test corpus."],
             },
+            "ai_priority": {
+                "recommended_priority": "P1",
+                "confidence": 0.82,
+                "reason": "The confirmed production workflow raises the likely impact.",
+                "evidence_ids": ["finding-description", "site-risk-context"],
+                "context_revision": "revision-1",
+            },
+            "ai_summary": {
+                "description": "The endpoint may pass attacker-controlled input to a database query.",
+                "business_impact": "Exploitation could disclose or alter application records.",
+                "evidence_ids": ["finding-description", "site-risk-context"],
+            },
         }
     )
 

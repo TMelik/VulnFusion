@@ -65,6 +65,7 @@ def test_main_help_lists_scan_config_flag():
     assert "--no-risk-scoring" in result.stdout
     assert "--no-score" in result.stdout
     assert "--with-zap" in result.stdout
+    assert "--scanners" in result.stdout
     assert "--zap-report" in result.stdout
 
 
@@ -126,6 +127,17 @@ class _ConfigCaptureOrchestrator:
             if opts.get(SCAN_CONFIG_ENABLED_KEY, True)
         ] or ["nmap"]
         return _minimal_results(target, scanners_run)
+
+    def run_selected(self, target, scanner_names, options=None, normalize=True, save_raw=True):
+        run_folder = self._run_root / "run"
+        run_folder.mkdir(parents=True, exist_ok=True)
+        self.current_run_folder = run_folder
+        self._captured["target"] = target
+        self._captured["selected_scanners"] = list(scanner_names)
+        self._captured["options"] = options or {}
+        self._captured["normalize"] = normalize
+        self._captured["save_raw"] = save_raw
+        return _minimal_results(target, list(scanner_names))
 
     def run_scanner(self, scanner_name, target, options=None, normalize=True, save_raw=True):
         run_folder = self._run_root / "run"
@@ -222,6 +234,31 @@ def test_main_probe_only_does_not_generate_report_by_default(monkeypatch, tmp_pa
     assert captured["probe_target"] == "example.com"
     assert not (tmp_path / "run").exists()
     assert "normalized_target" in output.out
+
+
+def test_main_runs_explicit_scanner_subset_and_persists_selection(monkeypatch, tmp_path, capsys):
+    rc, captured = _run_main_with_fake_orchestrator(
+        monkeypatch,
+        tmp_path,
+        [
+            "main.py",
+            "--target", "https://example.com",
+            "--scanners", "nmap,nuclei,nmap",
+            "--data-dir", str(tmp_path / "data"),
+            "--json",
+            "--no-dedupe",
+            "--no-score",
+        ],
+    )
+    capsys.readouterr()
+
+    assert rc == 0
+    assert captured["selected_scanners"] == ["nmap", "nuclei"]
+    effective = json.loads((tmp_path / "run" / "effective_scan_config.json").read_text(encoding="utf-8"))
+    assert effective["selected_scanners"] == ["nmap", "nuclei"]
+    assert effective["scanners"]["nmap"]["enabled"] is True
+    assert effective["scanners"]["nuclei"]["enabled"] is True
+    assert effective["scanners"]["zap"]["enabled"] is False
 
 
 def test_main_accepts_valid_yaml_scan_config_and_saves_effective_config(monkeypatch, tmp_path, capsys):
@@ -1789,6 +1826,32 @@ def test_orchestrator_skips_disabled_scanners_in_run_all(tmp_path):
     assert disabled.calls == []
     assert len(enabled.calls) == 1
     assert results["scanners_run"] == ["enabled"]
+
+
+def test_multi_scanner_parser_and_orchestrator_selection(monkeypatch, tmp_path):
+    assert main._parse_scanner_subset("nmap,nuclei,nmap") == ["nmap", "nuclei"]
+    with pytest.raises(ValueError, match="Unknown scanner"):
+        main._parse_scanner_subset("nmap,unknown")
+
+    orchestrator = ScannerOrchestrator(reports_dir=tmp_path)
+    orchestrator.scanners = {name: object() for name in ("nmap", "nuclei", "zap")}
+    captured = {}
+
+    def discovery(target, options, normalize, save_raw):
+        captured.update(target=target, options=options, normalize=normalize, save_raw=save_raw)
+        return {"ok": True}
+
+    monkeypatch.setattr(orchestrator, "_run_all_discovery_mode", discovery)
+    result = orchestrator.run_selected(
+        "https://example.com/",
+        ["nmap", "nuclei"],
+        options={"nuclei": {"severity": ["high"]}},
+        save_raw=False,
+    )
+
+    assert result == {"ok": True}
+    assert captured["options"]["nuclei"]["severity"] == ["high"]
+    assert captured["options"]["zap"][SCAN_CONFIG_ENABLED_KEY] is False
 
 
 @pytest.mark.parametrize(

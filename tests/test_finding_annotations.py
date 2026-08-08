@@ -79,7 +79,9 @@ def test_annotations_file_is_okf_and_leaves_discovery_untouched(tmp_path):
     assert "type: Finding Triage" in text
     assert "human:bob" in text
     assert "# Finding Triage Log" in text
-    for name in ("index.md", "profile.md", "log.md"):
+    assert (bundle / "index.md").exists()
+    assert "annotations.md" in (bundle / "index.md").read_text(encoding="utf-8")
+    for name in ("profile.md", "log.md"):
         assert not (bundle / name).exists()
 
 

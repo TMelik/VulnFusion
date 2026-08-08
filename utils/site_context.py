@@ -1143,19 +1143,10 @@ def write_site_okf_bundle(
         profile_lines.extend(["", "The description was reviewed against the sources listed above."])
     profile_text = "\n".join(profile_lines).rstrip() + "\n"
 
-    index_text = (
-        "---\n"
-        'okf_version: "0.2"\n'
-        "---\n\n"
-        f"# Target context: {host}\n\n"
-        f"- [Current site profile](profile.md) — {_markdown_text(description)}\n"
-        f"- [Immutable revision `{revision[:12]}`](revisions/{revision}.md)\n"
-    )
     revision_path = bundle_dir / "revisions" / f"{revision}.md"
     revision_exists = revision_path.is_file()
     if not revision_exists:
         _atomic_write(revision_path, profile_text)
-    _atomic_write(bundle_dir / "index.md", index_text)
     profile_path = bundle_dir / "profile.md"
     if not profile_path.is_file() or profile_path.read_text(encoding="utf-8") != profile_text:
         _atomic_write(profile_path, profile_text)
@@ -1170,6 +1161,9 @@ def write_site_okf_bundle(
         f"- **{action}**: Human `{reviewer_id}` confirmed profile revision `{revision[:12]}`.\n"
     )
     _atomic_write(log_path, log_text)
+    # Keep the bundle index complete when project and triage concepts coexist.
+    from utils.project_store import refresh_bundle_index
+    refresh_bundle_index(bundle_dir, target=target, title=host or target)
     return {
         "bundle_key": bundle_key,
         "bundle_path": str(bundle_dir),

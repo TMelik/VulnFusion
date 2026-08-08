@@ -94,7 +94,7 @@ not overwrite `vulnerability_name`.
 ### Advisory applicability and remediation
 
 When the provider is configured, final findings are automatically analyzed in
-deterministic priority order. The default live-call cap is the top 10 findings;
+deterministic priority order. The default live-call cap is the top 25 findings;
 use `--ai-analysis-limit` to change it or `--no-ai-analysis` to disable the
 stage.
 
@@ -108,6 +108,18 @@ The strict public fields are:
     "confidence": 0.88,
     "reason": "Scanner evidence identifies the affected parameter.",
     "evidence_ids": ["finding-anchors", "finding-evidence"]
+  },
+  "ai_priority": {
+    "recommended_priority": "P1",
+    "confidence": 0.82,
+    "reason": "The confirmed production context raises the likely impact.",
+    "evidence_ids": ["finding-anchors", "site-risk-context"],
+    "context_revision": "<sha256>"
+  },
+  "ai_summary": {
+    "description": "The endpoint may pass untrusted input to a database query.",
+    "business_impact": "Exploitation could expose or alter business records.",
+    "evidence_ids": ["finding-evidence", "site-risk-context"]
   },
   "ai_remediation": {
     "steps": ["Use parameterized database queries."],
@@ -139,13 +151,15 @@ cannot guarantee that an unknown target-side rate limit will not be reached.
 ### Report and diagnostics
 
 The HTML report separates scanner evidence, deterministic risk, correlation,
-and advisory AI output. It includes applicability, suggested remediation,
-verification, `needs_review`, limitations, and a run summary.
+and advisory AI output. It includes applicability, AI/deterministic priority
+comparison, consolidated impact, suggested remediation, verification,
+`needs_review`, limitations, and a run summary.
 
 Each run stores sanitized `ai_analysis_metrics.json` with counts, redactions,
 latency, tokens, and estimated cost when model pricing variables are supplied.
 The export sanitizer strictly allowlists the public `correlation`,
-`asset_knowledge`, `applicability`, `ai_remediation`, and summary objects.
+`asset_knowledge`, `applicability`, `ai_priority`, `ai_summary`,
+`ai_remediation`, and run-summary objects.
 
 ## Small, credible evaluation
 

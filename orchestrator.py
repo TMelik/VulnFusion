@@ -2084,6 +2084,40 @@ class ScannerOrchestrator:
             return self._run_all_discovery_mode(target, options, normalize, save_raw)
         return self._run_all_legacy(target, options, normalize, save_raw)
 
+    def run_selected(
+        self,
+        target: str,
+        scanner_names: List[str],
+        options: Optional[Dict[str, Dict[str, Any]]] = None,
+        normalize: bool = True,
+        save_raw: bool = True,
+    ) -> Dict[str, Any]:
+        """Run an explicit scanner subset and return one aggregate result."""
+        selected = list(dict.fromkeys(str(name).strip().lower() for name in scanner_names))
+        unknown = [name for name in selected if name not in self.scanners]
+        if unknown:
+            raise ValueError(f"Unknown scanner(s): {', '.join(unknown)}")
+        if not selected:
+            raise ValueError("At least one scanner must be selected")
+        selected_options = {
+            name: dict((options or {}).get(name, {}))
+            for name in self.scanners
+        }
+        for name in self.scanners:
+            if name not in selected:
+                selected_options[name]["__scan_enabled__"] = False
+
+        if "nmap" in selected:
+            return self._run_all_discovery_mode(
+                target, selected_options, normalize, save_raw
+            )
+
+        if "://" not in str(target):
+            raise ValueError(
+                "A scanner subset without nmap requires an explicit HTTP(S) target"
+            )
+        return self._run_all_legacy(target, selected_options, normalize, save_raw)
+
     def _save_raw_output(self, scanner_name: str, target: str, results: Dict[str, Any]) -> Path:
         """Save raw scanner output to run folder's raw/ directory."""
         timestamp = datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')

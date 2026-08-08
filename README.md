@@ -20,7 +20,7 @@ The result is easier to review without hiding scanner evidence:
 - findings from Nmap, Nuclei, Wapiti, Nikto, and OWASP ZAP;
 - strict normalized schema and scanner provenance;
 - conservative LLM-assisted duplicate resolution;
-- bounded advisory applicability and remediation guidance;
+- bounded advisory applicability, summary, priority, and remediation guidance;
 - deterministic risk score, priority, and rationale;
 - NEW, PERSISTENT, CHANGED, and FIXED tracking;
 - per-site context and knowledge bundles;
@@ -43,6 +43,9 @@ uv run python main.py --list-scanners
 
 # Run a scan and generate report.html
 uv run python main.py --target example.com --scanner all
+
+# Launch the local project/scanning dashboard
+uv run python main.py --ui
 ```
 
 Results are written under `data/<target>/<timestamp>/` by default.
@@ -102,40 +105,66 @@ refresh one or `--no-context-reuse` to ignore it. Only confirmed values may
 affect deterministic scoring. Site context never changes deduplication identity
 and no external search API or broad reconnaissance is used.
 
+The local UI (`uv run python main.py --ui`) treats one project as one website.
+Create or select a project, choose individual scanners or the Safe/Full preset,
+set the bounded AI-analysis limit, and confirm that the target is authorized.
+For a new project (or a stale profile), the UI performs context discovery first
+and pauses for human review. The scan starts only after the proposed description,
+business processes, and risk context are accepted or explicitly skipped. Project
+settings, confirmed context, immutable context revisions, and human triage are
+kept together under `data/asset_knowledge/<site-key>/`.
+
+The CLI equivalent for an explicit subset is:
+
+```bash
+uv run python main.py --target https://example.com \
+  --scanners nmap,nuclei,zap \
+  --ai-analysis-limit 25
+```
+
 Owner-supplied deterministic rules remain available through
 `--asset-context-file`.
 
 ## Structured LLM assistance
 
-Configure an OpenAI-compatible chat-completions endpoint through environment
-variables or equivalent CLI flags:
+Configure an OpenAI-compatible provider through environment variables or
+equivalent CLI flags. The API URL may be either a provider base URL or the full
+`/chat/completions` endpoint:
 
 ```bash
-export VULN_MANAGER_LLM_API_URL="https://provider.example/v1/chat/completions"
+export VULN_MANAGER_LLM_API_URL="https://openrouter.ai/api/v1"
 export VULN_MANAGER_LLM_API_KEY="..."
-export VULN_MANAGER_LLM_MODEL="model-name"
+export VULN_MANAGER_LLM_MODEL="deepseek/deepseek-v4-pro"
 ```
 
-The same provider supports two bounded stages. Duplicate resolution merges only
+The same provider is shared by bounded site-context analysis, duplicate
+resolution, and final finding analysis. Duplicate resolution merges only
 when `same_vulnerability=true` and confidence is at least `0.85`. Invalid,
 timed-out, failed, or low-confidence decisions never trigger a merge. The
 canonical title remains a separate recommendation and does not overwrite the
 scanner-native vulnerability name.
 
-After deterministic scoring, VulnFusion automatically analyzes at most the ten
-highest-priority findings for applicability and advisory remediation. Strict
-JSON, evidence IDs, secret redaction, versioned caching, and fail-open handling
-are enforced. Advice never suppresses a finding or changes scanner remediation
-or risk. Use `--ai-analysis-limit N` or `--no-ai-analysis` to control this stage.
-The YAML knowledge store is a versioned duplicate-resolution cache and advisory
-finding-analysis cache; it never replaces scanner evidence.
+After deterministic scoring, VulnFusion automatically analyzes at most the 25
+highest-priority findings. For each selected finding it produces a consolidated
+description, business impact, applicability assessment, remediation guidance,
+and a separate advisory `ai_priority`. The deterministic `priority`, CVSS/risk
+inputs, scanner evidence, and scanner remediation remain unchanged and visible,
+so disagreements can be reviewed instead of silently overwritten. Strict JSON,
+evidence IDs, secret redaction, versioned caching, and fail-open handling are
+enforced. Use `--ai-analysis-limit N` (1–100) or `--no-ai-analysis` to control
+this stage. The YAML knowledge store is a versioned duplicate-resolution cache
+and advisory finding-analysis cache; it never replaces scanner evidence.
 
 Disable only duplicate resolution with `--duplicate-mode off` or `--no-dedupe`.
 
 ## Pipeline
 
 ```text
-scan and normalize
+project selection and authorization confirmation
+        ↓
+bounded crawl and human context review (new/stale project)
+        ↓
+selected scanners, then scan and normalize
         ↓
 conservative cross-scanner deduplication
         ↓
@@ -145,7 +174,7 @@ asset context and deterministic risk scoring
         ↓
 bounded advisory finding analysis
         ↓
-sanitized JSON and self-contained HTML report
+dashboard, sanitized JSON and self-contained HTML report, including graphs
 ```
 
 Normal scan runs write `report.html` automatically. Use `--no-report` (or
@@ -233,6 +262,7 @@ DefectDojo integration details live in
 - LLM failure degrades to separate findings, never an automatic merge.
 - Site context is human-confirmed and isolated per site/domain.
 - AI applicability and remediation are advisory; scanner evidence stays authoritative.
+- AI priority is a separate recommendation and never overwrites deterministic priority.
 - Scanner availability and scan depth depend on the local or container setup.
 - ZAP active scans can be slow and intrusive; use them only when explicitly
   authorized.

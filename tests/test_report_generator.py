@@ -1183,6 +1183,18 @@ def test_report_separates_ai_advice_from_scanner_evidence_and_risk():
             "steps": ["Use parameterized queries."],
             "verification": ["Repeat the request with a safe SQL corpus."],
         },
+        ai_priority={
+            "recommended_priority": "P0",
+            "confidence": 0.81,
+            "reason": "The confirmed business context raises the likely impact.",
+            "evidence_ids": ["finding-description", "site-risk-context"],
+            "context_revision": "revision-1",
+        },
+        ai_summary={
+            "description": "The endpoint may pass attacker-controlled input to a database query.",
+            "business_impact": "Exploitation could expose or modify business records.",
+            "evidence_ids": ["finding-description", "site-risk-context"],
+        },
     )
     results = _results(finding)
     results["ai_analysis_summary"] = {
@@ -1209,6 +1221,9 @@ def test_report_separates_ai_advice_from_scanner_evidence_and_risk():
     assert "Suggested remediation" in html
     assert "Use parameterized queries." in html
     assert "Verification" in html
+    assert "AI recommendation: P0" in html
+    assert "Business impact" in html
+    assert "revision-1" in html
     assert "scanner evidence and deterministic risk remain authoritative" in html
     assert "Risk 68/100" in html
     assert "AI Analysis Run" in html

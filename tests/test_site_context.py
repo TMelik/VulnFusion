@@ -424,6 +424,10 @@ def test_human_confirmed_context_writes_separate_valid_okf_bundles(tmp_path):
     assert "Appointment booking" in profile
     assert "# Confirmed risk context" in profile
     assert "A separate company site" not in profile
+    index = (profile_path.parent / "index.md").read_text(encoding="utf-8")
+    assert "User-confirmed citizen appointment portal." in index
+    assert f"revisions/{first['profile_revision']}.md" in index
+    assert f"Immutable revision `{first['profile_revision'][:12]}`" in index
 
 
 def test_okf_revisions_are_append_only_and_logs_append(tmp_path):

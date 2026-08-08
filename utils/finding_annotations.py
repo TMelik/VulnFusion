@@ -343,6 +343,12 @@ def record_annotation(
             latest_entry=entry,
         )
         _atomic_write(bundle_dir / ANNOTATIONS_FILENAME, text)
+        from utils.project_store import refresh_bundle_index
+        refresh_bundle_index(
+            bundle_dir,
+            target=normalize_site_url(target),
+            title=_target_host(target) or normalize_site_url(target),
+        )
     return dict(entry)
 
 

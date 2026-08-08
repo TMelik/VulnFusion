@@ -70,6 +70,7 @@ from utils.scan_config import resolve_scan_config, save_effective_scan_config
 from utils.timing import missing_scanner_stages, print_timing_summary, save_timing_payload
 
 WEB_SCANNERS = {'nuclei', 'wapiti', 'nikto', 'zap'}
+SCANNER_NAMES = ('nmap', 'nuclei', 'wapiti', 'nikto', 'zap')
 RUNTIME_RISK_FIELDS = {'risk_score', 'priority', 'risk_factors', 'risk_rationale'}
 _SITE_CONTEXT_CRITICALITIES = {'high', 'medium', 'low'}
 _SITE_CONTEXT_ENVIRONMENTS = {'production', 'staging', 'development', 'test'}
@@ -118,6 +119,7 @@ def print_summary(results: dict):
             f"analyzed={ai_summary.get('analyzed_count', 0)}, "
             f"cached={ai_summary.get('cached_count', 0)}, "
             f"needs_review={ai_summary.get('needs_review_count', 0)}, "
+            f"priority_disagreements={ai_summary.get('priority_disagreement_count', 0)}, "
             f"unavailable={ai_summary.get('unavailable_count', 0)}, "
             f"skipped_limit={ai_summary.get('skipped_limit_count', 0)}"
         )
@@ -327,6 +329,35 @@ def _expand_existing_path_argument(flag: str, path_value: str | None, parser: ar
     return expanded
 
 
+def _parse_scanner_subset(value: str | None) -> list[str] | None:
+    """Parse the comma-separated multi-scanner CLI option."""
+    if value is None:
+        return None
+    selected = list(dict.fromkeys(item.strip().lower() for item in value.split(',') if item.strip()))
+    if not selected:
+        raise ValueError("--scanners must select at least one scanner")
+    unknown = [name for name in selected if name not in SCANNER_NAMES]
+    if unknown:
+        raise ValueError(f"Unknown scanner(s) in --scanners: {', '.join(unknown)}")
+    return selected
+
+
+def _apply_scanner_subset(resolved, selected: list[str] | None) -> None:
+    """Restrict a resolved scan config to the explicit scanner subset."""
+    if not selected:
+        return
+    for name in SCANNER_NAMES:
+        enabled = name in selected
+        resolved.scanner_enabled[name] = enabled
+        if not enabled:
+            resolved.scanner_options.setdefault(name, {})["__scan_enabled__"] = False
+        elif resolved.scanner_options.get(name, {}).get("__scan_enabled__") is False:
+            resolved.scanner_options[name].pop("__scan_enabled__", None)
+        scanner_payload = resolved.effective_config.setdefault("scanners", {}).setdefault(name, {})
+        scanner_payload["enabled"] = enabled
+    resolved.effective_config["selected_scanners"] = list(selected)
+
+
 def _build_duplicate_config(args: argparse.Namespace) -> LLMDuplicateConfig:
     """Build the LLM duplicate resolver config from CLI and environment."""
     mode = 'off' if args.no_dedupe else (args.duplicate_mode or _default_duplicate_mode())
@@ -378,6 +409,8 @@ def _clear_partial_ai_analysis(results: dict) -> None:
         finding.pop('ai_analysis_status', None)
         finding.pop('applicability', None)
         finding.pop('ai_remediation', None)
+        finding.pop('ai_priority', None)
+        finding.pop('ai_summary', None)
 
 
 def _unexpected_ai_analysis_summary(config: LLMFindingAnalysisConfig) -> dict:
@@ -393,6 +426,7 @@ def _unexpected_ai_analysis_summary(config: LLMFindingAnalysisConfig) -> dict:
         'unavailable_count': 0,
         'skipped_limit_count': 0,
         'needs_review_count': 0,
+        'priority_disagreement_count': 0,
         'redaction_count': 0,
         'prompt_tokens': 0,
         'completion_tokens': 0,
@@ -1223,6 +1257,12 @@ def main():
         )
 
         parser.add_argument(
+            '--scanners',
+            metavar='LIST',
+            help='Comma-separated scanner subset; cannot be combined with --scanner/-s'
+        )
+
+        parser.add_argument(
             '--scan-config',
             type=str,
             metavar='PATH',
@@ -1729,9 +1769,9 @@ def main():
         parser.add_argument(
             '--ai-analysis-limit',
             type=int,
-            default=10,
+            default=25,
             metavar='COUNT',
-            help='Maximum highest-priority findings analyzed by the advisory LLM stage (default: 10)'
+            help='Maximum highest-priority findings analyzed by the advisory LLM stage (1-100; default: 25)'
         )
 
         parser.add_argument(
@@ -1896,10 +1936,20 @@ def main():
             sys.argv.append("--list-scanners")
 
         args = parser.parse_args()
+        explicit_scanner_flag = any(
+            token in {'--scanner', '-s'} or token.startswith('--scanner=')
+            for token in sys.argv[1:]
+        )
+        if args.scanners and explicit_scanner_flag:
+            parser.error("--scanners cannot be combined with --scanner/-s")
+        try:
+            selected_scanners = _parse_scanner_subset(args.scanners)
+        except ValueError as exc:
+            parser.error(str(exc))
         if (args.context_accept or args.context_description) and not args.discover_context:
             parser.error("--context-accept/--context-description require --discover-context")
-        if args.ai_analysis_limit < 1:
-            parser.error("--ai-analysis-limit must be at least 1")
+        if not 1 <= args.ai_analysis_limit <= 100:
+            parser.error("--ai-analysis-limit must be between 1 and 100")
         if args.defectdojo_upload and args.no_defectdojo_upload:
             parser.error("--defectdojo-upload and --no-defectdojo-upload cannot be used together")
         if args.defectdojo_auto_create_context and args.defectdojo_no_auto_create_context:
@@ -2014,6 +2064,7 @@ def main():
                 scanners=orchestrator.scanners,
                 argv=sys.argv[1:],
             )
+            _apply_scanner_subset(resolved_scan_config, selected_scanners)
         except ValueError as exc:
             parser.error(str(exc))
 
@@ -2113,8 +2164,9 @@ def main():
             selected_scanner
             and _scanner_uses_offline_input(selected_scanner, selected_scanner_options)
         )
+        direct_subset = bool(selected_scanners and 'nmap' not in selected_scanners)
         should_probe_target = args.probe_only or (
-            args.scanner in WEB_SCANNERS and not selected_offline_input
+            (args.scanner in WEB_SCANNERS or direct_subset) and not selected_offline_input
         )
         target_probe = None
         if should_probe_target and hasattr(orchestrator, 'probe_target'):
@@ -2222,7 +2274,15 @@ def main():
         if orchestrator.current_run_folder:
             save_effective_scan_config(orchestrator.current_run_folder, resolved_scan_config)
 
-        if args.scanner == 'all':
+        if selected_scanners:
+            results = orchestrator.run_selected(
+                args.target,
+                selected_scanners,
+                options=options,
+                normalize=normalize_output,
+                save_raw=save_raw,
+            )
+        elif args.scanner == 'all':
             results = orchestrator.run_all(
                 args.target,
                 options=options,

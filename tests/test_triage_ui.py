@@ -48,7 +48,11 @@ def test_validate_scanner():
 def test_build_scan_argv_is_a_safe_list(tmp_path):
     argv = triage_ui.build_scan_argv("/repo/main.py", tmp_path, "example.com", "all")
     assert isinstance(argv, list)
-    assert argv[2:] == ["--target", "example.com", "--scanner", "all", "--data-dir", str(tmp_path), "--apply-annotations"]
+    assert argv[2:] == [
+        "--target", "example.com", "--scanner", "all",
+        "--ai-analysis-limit", "25", "--data-dir", str(tmp_path),
+        "--apply-annotations",
+    ]
     # Injection attempts never reach argv construction.
     with pytest.raises(ValueError):
         triage_ui.build_scan_argv("/repo/main.py", tmp_path, "; rm -rf /", "all")
@@ -109,6 +113,9 @@ class _ASGIClient:
 
     def post(self, path, **kwargs):
         return self.request("POST", path, **kwargs)
+
+    def patch(self, path, **kwargs):
+        return self.request("PATCH", path, **kwargs)
 
 
 def _client(tmp_path):
@@ -201,6 +208,166 @@ def test_run_scan_rejects_injection_and_cross_origin(tmp_path):
                         headers=_auth({"Content-Type": "application/json", "Origin": "http://evil.example.com"}),
                         json={"target": "example.com", "scanner": "all"})
     assert cross.status_code == 403
+
+
+def test_project_create_list_and_multi_scanner_argv(tmp_path):
+    client = _client(tmp_path)
+    rejected = client.post(
+        "/api/projects",
+        headers=_auth({"Content-Type": "application/json"}),
+        json={"name": "Customer portal", "target": TARGET},
+    )
+    assert rejected.status_code == 400
+
+    created = client.post(
+        "/api/projects",
+        headers=_auth({"Content-Type": "application/json"}),
+        json={
+            "name": "Customer portal",
+            "target": TARGET,
+            "default_scanners": ["nmap", "nuclei", "zap"],
+            "ai_analysis_limit": 37,
+            "authorization_confirmed": True,
+        },
+    )
+    assert created.status_code == 201, created.text
+    project = created.json()
+    assert project["target"] == "https://example.com/"
+    assert project["default_scanners"] == ["nmap", "nuclei", "zap"]
+    assert project["ai_analysis_limit"] == 37
+
+    listed = client.get("/api/projects", headers=_auth()).json()["projects"]
+    assert [item["project_id"] for item in listed] == [project["project_id"]]
+    bundle = tmp_path / "asset_knowledge" / project["project_id"]
+    assert (bundle / "project.md").is_file()
+    assert "project.md" in (bundle / "index.md").read_text(encoding="utf-8")
+
+    argv = triage_ui.build_scan_argv(
+        "/repo/main.py",
+        tmp_path,
+        project["target"],
+        scanners=["nmap", "nuclei", "zap"],
+        ai_analysis_limit=37,
+    )
+    assert "--scanners" in argv
+    assert argv[argv.index("--scanners") + 1] == "nmap,nuclei,zap"
+    assert argv[argv.index("--ai-analysis-limit") + 1] == "37"
+
+
+def test_project_scan_endpoint_passes_review_workflow_settings_without_launching(monkeypatch, tmp_path):
+    seen = {}
+
+    class FakeJobs:
+        def __init__(self, data_dir):
+            seen["data_dir"] = data_dir
+
+        def start_project(self, **kwargs):
+            seen.update(kwargs)
+            return "job-safe"
+
+        def get(self, job_id):
+            return None
+
+    monkeypatch.setattr(triage_ui, "JobManager", FakeJobs)
+    client = _client(tmp_path)
+    project = client.post(
+        "/api/projects",
+        headers=_auth({"Content-Type": "application/json"}),
+        json={
+            "name": "Payments",
+            "target": TARGET,
+            "authorization_confirmed": True,
+        },
+    ).json()
+
+    rejected = client.post(
+        f"/api/projects/{project['project_id']}/scan",
+        headers=_auth({"Content-Type": "application/json"}),
+        json={"scanners": ["nuclei"]},
+    )
+    assert rejected.status_code == 400
+    started = client.post(
+        f"/api/projects/{project['project_id']}/scan",
+        headers=_auth({"Content-Type": "application/json"}),
+        json={
+            "scanners": ["nmap", "nuclei"],
+            "ai_analysis_limit": 31,
+            "authorization_confirmed": True,
+        },
+    )
+    assert started.status_code == 200
+    assert started.json() == {"job_id": "job-safe"}
+    assert seen["scanners"] == ["nmap", "nuclei"]
+    assert seen["ai_analysis_limit"] == 31
+
+
+def test_context_review_validates_evidence_before_releasing_job(tmp_path):
+    manager = triage_ui.JobManager(tmp_path)
+    job = triage_ui.Job(
+        id="job-review",
+        argv=[],
+        target=TARGET,
+        scanner="nuclei",
+        phase="awaiting_context_review",
+        context_draft={
+            "pages": [{"id": "page-1"}],
+            "osint": [],
+            "analysis": {},
+        },
+    )
+    manager._jobs[job.id] = job
+    invalid = {
+        "description": "Customer portal",
+        "business_processes": ["Customer sign-in"],
+        "risk_context": {
+            "asset_criticality": "high",
+            "environment": "production",
+            "sensitive_data": True,
+            "requires_auth": True,
+            "confidence": 0.9,
+            "reason": "Confirmed by the reviewer.",
+            "evidence_ids": ["invented-source"],
+        },
+    }
+    with pytest.raises(ValueError, match="unknown evidence"):
+        manager.review_context(job.id, action="accept", reviewed=invalid)
+    assert not job.review_event.is_set()
+
+    valid = json.loads(json.dumps(invalid).replace("invented-source", "page-1"))
+    manager.review_context(job.id, action="accept", reviewed=valid)
+    assert job.review_event.is_set()
+    assert job.reviewed_context["risk_context"]["evidence_ids"] == ["page-1"]
+
+
+def test_project_workflow_offers_manual_review_when_context_discovery_fails(monkeypatch, tmp_path):
+    manager = triage_ui.JobManager(tmp_path)
+    job = triage_ui.Job(
+        id="job-fallback",
+        argv=["safe-command"],
+        target=TARGET,
+        scanner="nuclei",
+        phase="queued",
+    )
+    job.context_action = "skip"
+    job.review_event.set()
+    monkeypatch.setattr(
+        triage_ui,
+        "discover_site_context",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("offline")),
+    )
+
+    def complete_without_process(current, cwd):
+        current.phase = "success"
+        current.status = "success"
+        current.returncode = 0
+
+    monkeypatch.setattr(manager, "_run_process", complete_without_process)
+    manager._run_project(job, tmp_path, "reviewer")
+
+    assert job.status == "success"
+    assert job.context_draft["analysis"]["analysis_source"] == "manual_fallback"
+    assert job.context_draft["analysis"]["risk_context"]["confidence"] == 0.0
+    assert any("manual review is required" in line for line in job.log)
 
 
 def test_job_manager_serializes_one_scan(tmp_path):

@@ -562,7 +562,9 @@ def _render_ai_advisory(finding: Dict[str, Any]) -> str:
 
     applicability = finding.get('applicability')
     remediation = finding.get('ai_remediation')
-    if not isinstance(applicability, dict) or not isinstance(remediation, dict):
+    ai_priority = finding.get('ai_priority')
+    ai_summary = finding.get('ai_summary')
+    if not all(isinstance(value, dict) for value in (applicability, remediation, ai_priority, ai_summary)):
         return ''
     status_labels = {
         'likely_false_positive': 'Likely false positive',
@@ -600,6 +602,25 @@ def _render_ai_advisory(finding: Dict[str, Any]) -> str:
         for item in verification
         if isinstance(item, str) and item.strip()
     ) if isinstance(verification, list) else ''
+    recommended_priority = str(ai_priority.get('recommended_priority') or '')
+    deterministic_priority = str(finding.get('priority') or '')
+    priority_confidence = ai_priority.get('confidence')
+    priority_confidence_text = (
+        f'{round(float(priority_confidence) * 100)}% confidence'
+        if isinstance(priority_confidence, (int, float))
+        and not isinstance(priority_confidence, bool)
+        and 0.0 <= float(priority_confidence) <= 1.0
+        else ''
+    )
+    priority_reason = escape(str(ai_priority.get('reason') or '').strip())
+    context_revision = escape(str(ai_priority.get('context_revision') or 'none').strip())
+    differs = bool(
+        deterministic_priority in _PRIORITY_RANK
+        and recommended_priority in _PRIORITY_RANK
+        and deterministic_priority != recommended_priority
+    )
+    summary_description = escape(str(ai_summary.get('description') or '').strip())
+    summary_impact = escape(str(ai_summary.get('business_impact') or '').strip())
     cache_badge = '<span class="badge ai-cache-badge">Cached</span>' if status == 'cached' else ''
     review_class = ' ai-advisory-review' if applicability_status == 'needs_review' else ''
     return f'''
@@ -614,6 +635,15 @@ def _render_ai_advisory(finding: Dict[str, Any]) -> str:
             </div>
             {f'<p class="ai-advisory-reason">{reason}</p>' if reason else ''}
             {f'<div class="ai-evidence-ids"><strong>Evidence:</strong> {evidence_text}</div>' if evidence_text else ''}
+            {f'<div class="ai-guidance"><strong>AI summary</strong><p>{summary_description}</p></div>' if summary_description else ''}
+            {f'<div class="ai-guidance"><strong>Business impact</strong><p>{summary_impact}</p></div>' if summary_impact else ''}
+            <div class="ai-guidance ai-priority-comparison">
+                <strong>Advisory priority</strong>
+                <p>Deterministic: {escape(deterministic_priority or 'not scored')} · AI recommendation: {escape(recommended_priority or 'unavailable')}
+                {f' · {priority_confidence_text}' if priority_confidence_text else ''}</p>
+                {f'<p>{priority_reason}</p>' if priority_reason else ''}
+                <small>Context revision: {context_revision}{' · recommendation differs' if differs else ''}</small>
+            </div>
             {f'<div class="ai-guidance"><strong>Suggested remediation</strong><ul>{steps_html}</ul></div>' if steps_html else ''}
             {f'<div class="ai-guidance"><strong>Verification</strong><ul>{verification_html}</ul></div>' if verification_html else ''}
             <div class="ai-advisory-limit">Advisory only — scanner evidence and deterministic risk remain authoritative.</div>
@@ -715,6 +745,7 @@ def _render_ai_analysis_summary(results: Dict[str, Any]) -> str:
         ('Cached', summary.get('cached_count')),
         ('Unavailable', summary.get('unavailable_count')),
         ('Needs review', summary.get('needs_review_count')),
+        ('Priority disagreements', summary.get('priority_disagreement_count')),
         ('Skipped by limit', summary.get('skipped_limit_count')),
         ('Redactions', summary.get('redaction_count')),
         ('Tokens', summary.get('total_tokens')),

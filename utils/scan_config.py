@@ -599,7 +599,11 @@ def _validate_run_selection(
         if not isinstance(ports, str) or not ports.strip():
             raise ValueError("--scan-mode manual requires nmap ports via --ports or scanners.nmap.options.ports")
 
-    if args.scanner == "all" and not scanner_enabled.get("nmap", True):
+    if (
+        args.scanner == "all"
+        and not getattr(args, "scanners", None)
+        and not scanner_enabled.get("nmap", True)
+    ):
         raise ValueError("scanners.nmap.enabled=false is not supported with --scanner all because discovery mode requires nmap")
 
     zap_options = scanner_options.get("zap", {})

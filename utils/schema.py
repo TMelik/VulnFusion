@@ -102,6 +102,8 @@ class VulnerabilitySchema:
         - ai_analysis_status: str - completed/cached/unavailable/skipped_limit
         - applicability: dict - Strict evidence-backed applicability assessment
         - ai_remediation: dict - Advisory remediation and verification steps
+        - ai_priority: dict - Separate advisory P0-P4 recommendation
+        - ai_summary: dict - Consolidated description and business impact
 
     Internal transient fields used for normalization, duplicate resolution,
     comparison matching, or scoring may still be tolerated by validators before
@@ -340,6 +342,30 @@ class VulnerabilitySchema:
                     },
                     "description": "Advisory remediation and verification guidance"
                 },
+                "ai_priority": {
+                    "type": "object",
+                    "required": ["recommended_priority", "confidence", "reason", "evidence_ids", "context_revision"],
+                    "additionalProperties": False,
+                    "properties": {
+                        "recommended_priority": {"type": "string", "enum": PRIORITY_LEVELS},
+                        "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+                        "reason": {"type": "string"},
+                        "evidence_ids": {"type": "array", "items": {"type": "string"}},
+                        "context_revision": {"type": "string"}
+                    },
+                    "description": "Advisory LLM priority kept separate from deterministic priority"
+                },
+                "ai_summary": {
+                    "type": "object",
+                    "required": ["description", "business_impact", "evidence_ids"],
+                    "additionalProperties": False,
+                    "properties": {
+                        "description": {"type": "string"},
+                        "business_impact": {"type": "string"},
+                        "evidence_ids": {"type": "array", "items": {"type": "string"}}
+                    },
+                    "description": "Advisory consolidated finding explanation"
+                },
                 "references": {
                     "type": "array",
                     "items": {"type": "string"},
@@ -575,7 +601,9 @@ def _validate_ai_analysis(errors: List[str], finding: Dict[str, Any]) -> None:
     status_present = 'ai_analysis_status' in finding
     applicability_present = 'applicability' in finding
     remediation_present = 'ai_remediation' in finding
-    if not (status_present or applicability_present or remediation_present):
+    priority_present = 'ai_priority' in finding
+    summary_present = 'ai_summary' in finding
+    if not (status_present or applicability_present or remediation_present or priority_present or summary_present):
         return
 
     status = finding.get('ai_analysis_status')
@@ -590,6 +618,10 @@ def _validate_ai_analysis(errors: List[str], finding: Dict[str, Any]) -> None:
         errors.append(f"'applicability' is required when ai_analysis_status={status!r}")
     if status in {'completed', 'cached'} and not remediation_present:
         errors.append(f"'ai_remediation' is required when ai_analysis_status={status!r}")
+    if status in {'completed', 'cached'} and not priority_present:
+        errors.append(f"'ai_priority' is required when ai_analysis_status={status!r}")
+    if status in {'completed', 'cached'} and not summary_present:
+        errors.append(f"'ai_summary' is required when ai_analysis_status={status!r}")
 
     if applicability_present:
         applicability = finding.get('applicability')
@@ -622,7 +654,7 @@ def _validate_ai_analysis(errors: List[str], finding: Dict[str, Any]) -> None:
             if not isinstance(reason, str) or not reason.strip():
                 errors.append("applicability.reason must be a non-empty string")
             evidence_ids = applicability.get('evidence_ids')
-            if not isinstance(evidence_ids, list) or not all(
+            if not isinstance(evidence_ids, list) or not evidence_ids or not all(
                 isinstance(item, str) and item.strip() for item in evidence_ids
             ):
                 errors.append("applicability.evidence_ids must be a list of non-empty strings")
@@ -652,6 +684,39 @@ def _validate_ai_analysis(errors: List[str], finding: Dict[str, Any]) -> None:
                     errors.append(
                         f"ai_remediation.{field} must contain 1 to 5 non-empty strings"
                     )
+
+    if priority_present:
+        priority = finding.get('ai_priority')
+        required = {'recommended_priority', 'confidence', 'reason', 'evidence_ids', 'context_revision'}
+        if not isinstance(priority, dict) or set(priority) != required:
+            errors.append("'ai_priority' must contain exactly: " + ", ".join(sorted(required)))
+        else:
+            if priority.get('recommended_priority') not in PRIORITY_LEVELS:
+                errors.append("ai_priority.recommended_priority must be P0 to P4")
+            confidence = priority.get('confidence')
+            if isinstance(confidence, bool) or not isinstance(confidence, (int, float)) or not 0.0 <= float(confidence) <= 1.0:
+                errors.append("ai_priority.confidence must be a number between 0.0 and 1.0")
+            if not isinstance(priority.get('reason'), str) or not priority.get('reason', '').strip():
+                errors.append("ai_priority.reason must be a non-empty string")
+            for field in ('evidence_ids',):
+                if not isinstance(priority.get(field), list) or not priority.get(field) or not all(isinstance(item, str) and item.strip() for item in priority.get(field, [])):
+                    errors.append(f"ai_priority.{field} must be a list of non-empty strings")
+            if not isinstance(priority.get('context_revision'), str) or not priority.get('context_revision', '').strip():
+                errors.append("ai_priority.context_revision must be a non-empty string")
+
+    if summary_present:
+        summary = finding.get('ai_summary')
+        required = {'description', 'business_impact', 'evidence_ids'}
+        if not isinstance(summary, dict) or set(summary) != required:
+            errors.append("'ai_summary' must contain exactly: " + ", ".join(sorted(required)))
+        else:
+            for field in ('description', 'business_impact'):
+                if not isinstance(summary.get(field), str) or not summary.get(field, '').strip():
+                    errors.append(f"ai_summary.{field} must be a non-empty string")
+            if not isinstance(summary.get('evidence_ids'), list) or not summary.get('evidence_ids') or not all(
+                isinstance(item, str) and item.strip() for item in summary.get('evidence_ids', [])
+            ):
+                errors.append("ai_summary.evidence_ids must be a list of non-empty strings")
 
 
 def _validate_human_triage(errors: List[str], finding: Dict[str, Any]) -> None:

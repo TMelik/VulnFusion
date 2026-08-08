@@ -40,12 +40,24 @@ def _finding(
 
 
 def _decision(*, status="likely_valid", evidence_ids=None, confidence=0.9):
+    cited = evidence_ids or ["finding-description", "finding-evidence"]
     return {
         "applicability": {
             "status": status,
             "confidence": confidence,
             "reason": "The endpoint, parameter, and scanner match evidence support the finding.",
-            "evidence_ids": evidence_ids or ["finding-description", "finding-evidence"],
+            "evidence_ids": cited,
+        },
+        "ai_priority": {
+            "recommended_priority": "P1",
+            "confidence": 0.8,
+            "reason": "The exposed production endpoint could affect a core business workflow.",
+            "evidence_ids": cited,
+        },
+        "ai_summary": {
+            "description": "The endpoint may accept attacker-controlled input in a database query.",
+            "business_impact": "Successful exploitation could expose or alter application data.",
+            "evidence_ids": cited,
         },
         "ai_remediation": {
             "steps": ["Replace string-built queries with parameterized queries."],
@@ -148,7 +160,7 @@ def test_request_is_bounded_redacted_and_marks_evidence_as_untrusted():
     assert "abcdefghijklmnopqrstuvwxyz" not in json.dumps(request)
     assert "[REDACTED:AUTHORIZATION]" in json.dumps(request)
     assert "untrusted data" in request["messages"][0]["content"]
-    assert request["max_completion_tokens"] == 600
+    assert request["max_completion_tokens"] == 1000
     assert "max_tokens" not in request
     user = json.loads(request["messages"][1]["content"])
     assert {item["id"] for item in user["evidence"]} >= {
@@ -174,8 +186,12 @@ def test_stable_top_n_uses_priority_then_risk_and_marks_the_rest():
     by_title = {item["vulnerability_name"]: item for item in results["all_findings"]}
     assert by_title["P2 high score"]["ai_analysis_status"] == "skipped_limit"
     assert by_title["P0 lower score"]["ai_analysis_status"] == "completed"
+    assert by_title["P0 lower score"]["priority"] == "P0"
+    assert by_title["P0 lower score"]["ai_priority"]["recommended_priority"] == "P1"
+    assert by_title["P0 lower score"]["ai_summary"]["business_impact"]
     assert results["ai_analysis_summary"]["selected_count"] == 2
     assert results["ai_analysis_summary"]["skipped_limit_count"] == 1
+    assert results["ai_analysis_summary"]["priority_disagreement_count"] == 2
 
 
 def test_top_n_tie_break_is_stable_for_different_parameters_when_input_reverses():

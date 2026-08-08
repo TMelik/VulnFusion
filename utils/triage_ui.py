@@ -1,4 +1,4 @@
-"""Local web UI for human triage of scan findings — a thin wrapper over the CLI.
+"""Local project, scanning, reporting, and human-triage UI over the CLI.
 
 The UI deliberately does NOT reimplement scanning. It:
 
@@ -17,7 +17,9 @@ to the data directory.
 """
 
 import ipaddress
+import copy
 import json
+import os
 import re
 import secrets
 import socket
@@ -38,6 +40,25 @@ from utils.finding_annotations import (
     record_annotation,
 )
 from utils.run_folder import create_target_slug, parse_timestamp
+from utils.project_store import (
+    DEFAULT_AI_ANALYSIS_LIMIT,
+    DEFAULT_SCANNERS,
+    SCANNER_NAMES,
+    list_projects,
+    load_project,
+    project_runs,
+    save_project,
+)
+from utils.llm_duplicate_resolver import resolve_llm_duplicate_provider_settings
+from utils.site_context import (
+    CONTEXT_SCHEMA_VERSION,
+    _normalize_risk_context,
+    discover_site_context,
+    load_site_okf_bundle,
+    normalize_site_url,
+    site_bundle_key,
+    write_site_okf_bundle,
+)
 
 # Must match the CLI's own --scanner choice set (main.py).
 SCANNER_CHOICES: Tuple[str, ...] = ("nmap", "nuclei", "wapiti", "nikto", "zap", "all")
@@ -128,16 +149,38 @@ def _hostname_or_ip_ok(candidate: str) -> bool:
     return bool(_HOSTNAME_RE.match(candidate))
 
 
-def build_scan_argv(main_py: Union[str, Path], data_dir: Union[str, Path], target: str, scanner: str) -> List[str]:
+def build_scan_argv(
+    main_py: Union[str, Path],
+    data_dir: Union[str, Path],
+    target: str,
+    scanner: str = "all",
+    *,
+    scanners: Optional[List[str]] = None,
+    ai_analysis_limit: int = DEFAULT_AI_ANALYSIS_LIMIT,
+) -> List[str]:
     """Construct the CLI invocation from validated primitives (no arbitrary flags)."""
-    return [
+    argv = [
         sys.executable,
         str(main_py),
         "--target", validate_target(target),
-        "--scanner", validate_scanner(scanner),
+    ]
+    if scanners is not None:
+        selected = []
+        for name in scanners:
+            selected.append(validate_scanner(name))
+        if not selected or "all" in selected:
+            raise ValueError("scanners must contain one or more concrete scanner names")
+        argv.extend(["--scanners", ",".join(dict.fromkeys(selected))])
+    else:
+        argv.extend(["--scanner", validate_scanner(scanner)])
+    if isinstance(ai_analysis_limit, bool) or not isinstance(ai_analysis_limit, int) or not 1 <= ai_analysis_limit <= 100:
+        raise ValueError("ai_analysis_limit must be between 1 and 100")
+    argv.extend([
+        "--ai-analysis-limit", str(ai_analysis_limit),
         "--data-dir", str(data_dir),
         "--apply-annotations",
-    ]
+    ])
+    return argv
 
 
 # ---------------------------------------------------------------------------
@@ -242,6 +285,10 @@ def _finding_view(finding: Dict[str, Any], index: int, annotations: Dict[str, Di
         "site_key": site_key,
         "reattachable": bool(site_key),
         "ai_applicability": (applicability or {}).get("status"),
+        "ai_priority": finding.get("ai_priority") if isinstance(finding.get("ai_priority"), dict) else None,
+        "ai_summary": finding.get("ai_summary") if isinstance(finding.get("ai_summary"), dict) else None,
+        "ai_remediation": finding.get("ai_remediation") if isinstance(finding.get("ai_remediation"), dict) else None,
+        "risk_rationale": finding.get("risk_rationale"),
         "triage": triage,
     }
 
@@ -261,6 +308,13 @@ class Job:
     started_at: float = 0.0
     log: List[str] = field(default_factory=list)
     artifact: Optional[Dict[str, str]] = None
+    phase: str = "scanning"
+    project_id: Optional[str] = None
+    scanners: List[str] = field(default_factory=list)
+    context_draft: Optional[Dict[str, Any]] = None
+    context_action: Optional[str] = None
+    reviewed_context: Optional[Dict[str, Any]] = None
+    review_event: threading.Event = field(default_factory=threading.Event, repr=False)
 
 
 class JobManager:
@@ -284,18 +338,7 @@ class JobManager:
 
     def _run(self, job: Job, cwd: Path) -> None:
         try:
-            proc = subprocess.Popen(
-                job.argv, cwd=str(cwd), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, bufsize=1,
-            )
-            assert proc.stdout is not None
-            for line in proc.stdout:
-                if len(job.log) < 3000:
-                    job.log.append(line.rstrip("\n"))
-            proc.wait()
-            job.returncode = proc.returncode
-            job.status = "success" if proc.returncode == 0 else "failed"
-            job.artifact = self._resolve_artifact(job)
+            self._run_process(job, cwd)
         except Exception as exc:  # pragma: no cover - defensive
             job.status = "failed"
             job.log.append(f"[ui] failed to launch scan: {type(exc).__name__}: {exc}")
@@ -303,6 +346,191 @@ class JobManager:
             with self._lock:
                 if self._running == job.id:
                     self._running = None
+
+    def _run_process(self, job: Job, cwd: Path) -> None:
+        job.phase = "scanning"
+        proc = subprocess.Popen(
+            job.argv, cwd=str(cwd), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, bufsize=1,
+        )
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            if len(job.log) < 3000:
+                job.log.append(line.rstrip("\n"))
+        proc.wait()
+        job.returncode = proc.returncode
+        job.phase = "postprocessing" if proc.returncode == 0 else "failed"
+        job.status = "success" if proc.returncode == 0 else "failed"
+        job.artifact = self._resolve_artifact(job)
+        if job.status == "success":
+            job.phase = "success"
+
+    def start_project(
+        self,
+        *,
+        project: Dict[str, Any],
+        scanners: List[str],
+        ai_analysis_limit: int,
+        main_py: Path,
+        cwd: Path,
+        reviewer: str,
+        now: float,
+    ) -> str:
+        argv = build_scan_argv(
+            main_py,
+            self.data_dir,
+            project["target"],
+            scanners=scanners,
+            ai_analysis_limit=ai_analysis_limit,
+        )
+        with self._lock:
+            if self._running and self._jobs[self._running].status == "running":
+                raise RuntimeError("a scan is already running")
+            self._counter += 1
+            job = Job(
+                id=f"job-{self._counter}",
+                argv=argv,
+                target=project["target"],
+                scanner=",".join(scanners),
+                scanners=list(scanners),
+                project_id=project["project_id"],
+                phase="queued",
+                started_at=now,
+            )
+            self._jobs[job.id] = job
+            self._running = job.id
+        threading.Thread(
+            target=self._run_project,
+            args=(job, cwd, reviewer),
+            daemon=True,
+        ).start()
+        return job.id
+
+    def _run_project(self, job: Job, cwd: Path, reviewer: str) -> None:
+        try:
+            existing = load_site_okf_bundle(self.data_dir, job.target)
+            if existing is None or existing.get("stale"):
+                job.phase = "discovering_context"
+                job.log.append("[ui] Discovering site context before scanning…")
+                settings = resolve_llm_duplicate_provider_settings(
+                    cli_api_url=None,
+                    cli_api_key=None,
+                    cli_model_name=None,
+                    env=os.environ,
+                )
+                try:
+                    job.context_draft = discover_site_context(
+                        job.target,
+                        api_url=settings["api_url"],
+                        api_key=settings["api_key"],
+                        model_name=settings["model_name"],
+                    )
+                except Exception as exc:
+                    job.log.append(
+                        f"[ui] Automated context discovery unavailable ({type(exc).__name__}); manual review is required."
+                    )
+                    job.context_draft = {
+                        "schema_version": CONTEXT_SCHEMA_VERSION,
+                        "target": normalize_site_url(job.target),
+                        "generated_at": "",
+                        "pages": [],
+                        "osint": [],
+                        "osint_uncertainties": ["Automated context discovery was unavailable."],
+                        "analysis": {
+                            "site_description": "",
+                            "business_processes": [],
+                            "uncertainties": ["Enter and confirm the site context manually."],
+                            "risk_context": {
+                                "asset_criticality": "unknown",
+                                "environment": "unknown",
+                                "sensitive_data": None,
+                                "requires_auth": None,
+                                "confidence": 0.0,
+                                "reason": "No crawl evidence was collected; human review is required.",
+                                "evidence_ids": [],
+                            },
+                            "analysis_source": "manual_fallback",
+                            "needs_review": True,
+                        },
+                    }
+                job.phase = "awaiting_context_review"
+                job.log.append("[ui] Context proposal is ready for review.")
+                job.review_event.wait()
+                if job.context_action == "cancel":
+                    job.phase = "cancelled"
+                    job.status = "cancelled"
+                    return
+                if job.context_action == "accept":
+                    draft = copy.deepcopy(job.context_draft)
+                    reviewed = job.reviewed_context or {}
+                    analysis = draft.get("analysis") if isinstance(draft.get("analysis"), dict) else {}
+                    analysis["business_processes"] = list(reviewed.get("business_processes") or [])
+                    analysis["risk_context"] = dict(reviewed.get("risk_context") or {})
+                    draft["analysis"] = analysis
+                    write_site_okf_bundle(
+                        self.data_dir,
+                        draft,
+                        confirmed_description=str(reviewed.get("description") or ""),
+                        reviewer=reviewer,
+                    )
+                    job.log.append("[ui] Confirmed context saved to the project OKF bundle.")
+                else:
+                    job.log.append("[ui] Continuing without confirmed site context.")
+            else:
+                job.log.append("[ui] Reusing fresh confirmed site context.")
+            self._run_process(job, cwd)
+        except Exception as exc:
+            job.status = "failed"
+            job.phase = "failed"
+            job.log.append(f"[ui] workflow failed: {type(exc).__name__}: {exc}")
+        finally:
+            with self._lock:
+                if self._running == job.id:
+                    self._running = None
+
+    def review_context(self, job_id: str, *, action: str, reviewed: Optional[Dict[str, Any]] = None) -> None:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None:
+                raise ValueError("unknown job")
+            if job.phase != "awaiting_context_review":
+                raise ValueError("job is not awaiting context review")
+            if action not in {"accept", "skip", "cancel"}:
+                raise ValueError("invalid context action")
+            if action == "accept":
+                value = reviewed or {}
+                description = " ".join(str(value.get("description") or "").split())
+                processes = value.get("business_processes")
+                risk = value.get("risk_context")
+                if not description or len(description) > 500:
+                    raise ValueError("reviewed description must contain 1 to 500 characters")
+                if not isinstance(processes, list) or len(processes) > 5 or not all(isinstance(item, str) and item.strip() for item in processes):
+                    raise ValueError("business_processes must contain at most five strings")
+                if not isinstance(risk, dict):
+                    raise ValueError("risk_context must be an object")
+                risk = dict(risk)
+                confidence = risk.get("confidence")
+                if isinstance(confidence, (int, float)) and not isinstance(confidence, bool):
+                    risk["confidence"] = float(confidence)
+                draft = job.context_draft or {}
+                source_ids = {
+                    str(item.get("id"))
+                    for collection in (draft.get("pages"), draft.get("osint"))
+                    if isinstance(collection, list)
+                    for item in collection
+                    if isinstance(item, dict) and item.get("id")
+                }
+                normalized_risk = _normalize_risk_context(
+                    risk,
+                    allowed_evidence_ids=source_ids,
+                )
+                job.reviewed_context = {
+                    "description": description,
+                    "business_processes": [" ".join(item.split())[:160] for item in processes],
+                    "risk_context": normalized_risk,
+                }
+            job.context_action = action
+            job.review_event.set()
 
     def _resolve_artifact(self, job: Job) -> Optional[Dict[str, str]]:
         base = self.data_dir / create_target_slug(job.target)
@@ -330,7 +558,9 @@ class JobManager:
             return {
                 "id": job.id, "status": job.status, "returncode": job.returncode,
                 "target": job.target, "scanner": job.scanner,
-                "log": job.log[-120:], "artifact": job.artifact,
+                "scanners": list(job.scanners), "project_id": job.project_id,
+                "phase": job.phase, "log": job.log[-120:], "artifact": job.artifact,
+                "context_draft": copy.deepcopy(job.context_draft) if job.phase == "awaiting_context_review" else None,
             }
 
 
@@ -347,7 +577,7 @@ def create_app(
     host: str = "127.0.0.1",
 ):
     from fastapi import Depends, FastAPI, HTTPException, Request
-    from fastapi.responses import HTMLResponse, JSONResponse
+    from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
     from pydantic import BaseModel
 
     data_dir = Path(data_dir)
@@ -367,6 +597,30 @@ def create_app(
     class RunScanBody(BaseModel):
         target: str
         scanner: str = "all"
+
+    class ProjectBody(BaseModel):
+        name: str
+        target: str
+        default_scanners: List[str] = list(DEFAULT_SCANNERS)
+        ai_analysis_limit: int = DEFAULT_AI_ANALYSIS_LIMIT
+        authorization_confirmed: bool = False
+
+    class ProjectUpdateBody(BaseModel):
+        name: Optional[str] = None
+        default_scanners: Optional[List[str]] = None
+        ai_analysis_limit: Optional[int] = None
+        authorization_confirmed: bool = False
+
+    class ProjectScanBody(BaseModel):
+        scanners: Optional[List[str]] = None
+        ai_analysis_limit: Optional[int] = None
+        authorization_confirmed: bool = False
+
+    class ContextReviewBody(BaseModel):
+        action: str
+        description: Optional[str] = None
+        business_processes: Optional[List[str]] = None
+        risk_context: Optional[Dict[str, Any]] = None
 
     async def require_auth(request: Request) -> None:
         if not secrets.compare_digest(request.headers.get("x-triage-token", ""), token):
@@ -405,6 +659,124 @@ def create_app(
     async def api_sites():
         return JSONResponse({"sites": list_sites(data_dir)})
 
+    @app.get("/api/projects", dependencies=[Depends(require_auth)])
+    async def api_projects():
+        projects = list_projects(data_dir)
+        known_targets = {item["target"] for item in projects}
+        for site in list_sites(data_dir):
+            target = str(site.get("target") or "")
+            if not target or target in known_targets:
+                continue
+            try:
+                has_context = load_site_okf_bundle(data_dir, target) is not None
+            except (OSError, ValueError):
+                has_context = False
+            projects.append({
+                "project_id": site_bundle_key(target),
+                "name": target,
+                "target": target,
+                "default_scanners": list(DEFAULT_SCANNERS),
+                "ai_analysis_limit": DEFAULT_AI_ANALYSIS_LIMIT,
+                "created_at": "",
+                "updated_at": "",
+                "authorization": {},
+                "runs": site.get("scans") or [],
+                "slug": site.get("slug"),
+                "has_context": has_context,
+                "legacy": True,
+            })
+        return JSONResponse({"projects": projects})
+
+    @app.post("/api/projects", dependencies=[Depends(require_auth)])
+    async def api_create_project(body: ProjectBody):
+        try:
+            project = save_project(
+                data_dir,
+                name=body.name,
+                target=validate_target(body.target),
+                default_scanners=body.default_scanners,
+                ai_analysis_limit=body.ai_analysis_limit,
+                reviewer=reviewer,
+                authorization_confirmed=body.authorization_confirmed,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        project["runs"] = project_runs(data_dir, project["target"])
+        project["slug"] = create_target_slug(project["target"])
+        project["has_context"] = False
+        return JSONResponse(project, status_code=201)
+
+    @app.patch("/api/projects/{project_id}", dependencies=[Depends(require_auth)])
+    async def api_update_project(project_id: str, body: ProjectUpdateBody):
+        try:
+            current = load_project(data_dir, project_id)
+            project = save_project(
+                data_dir,
+                name=body.name if body.name is not None else current["name"],
+                target=current["target"],
+                default_scanners=body.default_scanners if body.default_scanners is not None else current["default_scanners"],
+                ai_analysis_limit=body.ai_analysis_limit if body.ai_analysis_limit is not None else current["ai_analysis_limit"],
+                reviewer=reviewer,
+                authorization_confirmed=body.authorization_confirmed,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        return JSONResponse(project)
+
+    @app.get("/api/projects/{project_id}/runs", dependencies=[Depends(require_auth)])
+    async def api_project_runs(project_id: str):
+        try:
+            project = load_project(data_dir, project_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        return JSONResponse({"runs": project_runs(data_dir, project["target"])})
+
+    @app.post("/api/projects/{project_id}/scan", dependencies=[Depends(require_auth)])
+    async def api_project_scan(project_id: str, body: ProjectScanBody):
+        if body.authorization_confirmed is not True:
+            raise HTTPException(status_code=400, detail="explicit scan authorization confirmation is required")
+        try:
+            try:
+                project = load_project(data_dir, project_id)
+            except ValueError:
+                legacy_site = next(
+                    (
+                        site for site in list_sites(data_dir)
+                        if site_bundle_key(str(site.get("target") or "")) == project_id
+                    ),
+                    None,
+                )
+                if legacy_site is None:
+                    raise
+                project = save_project(
+                    data_dir,
+                    name=str(legacy_site.get("target") or project_id),
+                    target=str(legacy_site.get("target") or ""),
+                    reviewer=reviewer,
+                    authorization_confirmed=True,
+                )
+            scanners = body.scanners if body.scanners is not None else project["default_scanners"]
+            scanners = list(dict.fromkeys(str(name).strip().lower() for name in scanners))
+            if not scanners or any(name not in SCANNER_NAMES for name in scanners):
+                raise ValueError("one or more selected scanners are invalid")
+            limit = body.ai_analysis_limit if body.ai_analysis_limit is not None else project["ai_analysis_limit"]
+            if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
+                raise ValueError("ai_analysis_limit must be between 1 and 100")
+            job_id = jobs.start_project(
+                project=project,
+                scanners=scanners,
+                ai_analysis_limit=limit,
+                main_py=main_py,
+                cwd=main_py.parent,
+                reviewer=reviewer,
+                now=time.time(),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+        return JSONResponse({"job_id": job_id})
+
     @app.get("/api/scan", dependencies=[Depends(require_auth)])
     async def api_scan(slug: str, ts: str):
         try:
@@ -425,6 +797,10 @@ def create_app(
         return JSONResponse({
             "slug": slug, "ts": ts, "artifact": artifact, "target": target,
             "generated_at": data.get("generated_at"), "findings": findings,
+            "summary": data.get("summary") if isinstance(data.get("summary"), dict) else {},
+            "ai_analysis_summary": data.get("ai_analysis_summary") if isinstance(data.get("ai_analysis_summary"), dict) else {},
+            "asset_knowledge": data.get("asset_knowledge") if isinstance(data.get("asset_knowledge"), dict) else None,
+            "report_available": (scan_dir / "report.html").is_file(),
         })
 
     @app.post("/api/annotate", dependencies=[Depends(require_auth)])
@@ -476,6 +852,49 @@ def create_app(
             raise HTTPException(status_code=404, detail="unknown job")
         return JSONResponse(info)
 
+    @app.post("/api/jobs/{job_id}/context", dependencies=[Depends(require_auth)])
+    async def api_review_context(job_id: str, body: ContextReviewBody):
+        reviewed = None
+        if body.action == "accept":
+            reviewed = {
+                "description": body.description,
+                "business_processes": body.business_processes or [],
+                "risk_context": body.risk_context,
+            }
+        try:
+            jobs.review_context(job_id, action=body.action, reviewed=reviewed)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        return JSONResponse({"ok": True})
+
+    @app.get("/api/projects/{project_id}/runs/{ts}/report", dependencies=[Depends(require_auth)])
+    async def api_report(project_id: str, ts: str):
+        try:
+            try:
+                target = load_project(data_dir, project_id)["target"]
+            except ValueError:
+                legacy_site = next(
+                    (
+                        site for site in list_sites(data_dir)
+                        if site_bundle_key(str(site.get("target") or "")) == project_id
+                    ),
+                    None,
+                )
+                if legacy_site is None:
+                    raise
+                target = str(legacy_site.get("target") or "")
+            scan_dir = safe_scan_dir(data_dir, create_target_slug(target), ts)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        report_path = scan_dir / "report.html"
+        if not report_path.is_file():
+            raise HTTPException(status_code=404, detail="report not found")
+        return FileResponse(
+            report_path,
+            media_type="text/html",
+            headers={"X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer"},
+        )
+
     return app
 
 
@@ -517,7 +936,7 @@ def serve(
 
     if not _is_loopback(host):
         print(f"\n  ⚠  WARNING: binding to non-loopback host {host} — scan control is exposed to the network.\n")
-    print("\n  VulnFusion — Human Triage UI")
+    print("\n  VulnFusion — Projects & Scans UI")
     print(f"    URL:   http://{host}:{port}/")
     print(f"    Token: {token}   (auto-embedded in the page; needed for API calls)\n")
     uvicorn.run(app, host=host, port=port, log_level="warning")
@@ -546,7 +965,7 @@ _SPA_TEMPLATE = """<!doctype html>
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>VulnFusion — Human Triage</title>
+<title>VulnFusion — Projects &amp; Scans</title>
 <style>
   :root { color-scheme: dark; }
   * { box-sizing: border-box; }
@@ -594,33 +1013,76 @@ _SPA_TEMPLATE = """<!doctype html>
   #joblog { white-space: pre-wrap; font-family: ui-monospace, Menlo, monospace; font-size: 0.75rem;
             background: #020617; border: 1px solid #1f2937; border-radius: 0.5rem; padding: 0.6rem;
             max-height: 180px; overflow: auto; margin-top: 0.5rem; display: none; }
+  .panel { border:1px solid #1f2937; border-radius:.6rem; padding:.7rem; margin-bottom:.75rem; background:#0f172a; }
+  .scanner-grid { display:flex; gap:.55rem; flex-wrap:wrap; margin:.5rem 0; }
+  .scanner-grid label { font-size:.8rem; }
+  .summary-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(120px,1fr)); gap:.6rem; margin:.8rem 0; }
+  .metric { padding:.7rem; border:1px solid #1f2937; border-radius:.5rem; background:#111827; }
+  .metric strong { display:block; font-size:1.25rem; }
+  .distribution { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:.6rem; margin:.7rem 0; }
+  .distribution-row { display:grid; grid-template-columns:5rem 1fr 2rem; gap:.45rem; align-items:center; font-size:.78rem; margin:.28rem 0; }
+  .distribution-track { height:.45rem; border-radius:999px; background:#1f2937; overflow:hidden; }
+  .distribution-fill { height:100%; background:#6366f1; border-radius:999px; }
+  .source-list { font-size:.78rem; color:#cbd5e1; margin:-.25rem 0 .8rem; word-break:break-all; }
+  .modal { position:fixed; inset:0; background:#020617e8; display:none; align-items:center; justify-content:center; z-index:20; }
+  .modal.show { display:flex; }
+  .modal-card { width:min(760px,94vw); max-height:90vh; overflow:auto; background:#111827; border:1px solid #374151; border-radius:.8rem; padding:1rem; }
+  .form-grid { display:grid; grid-template-columns:1fr 1fr; gap:.6rem; }
+  .form-grid label { display:flex; flex-direction:column; gap:.25rem; }
+  .form-grid .wide { grid-column:1/-1; }
+  @media(max-width:760px) { .layout{grid-template-columns:1fr}.sidebar{max-height:none}.form-grid{grid-template-columns:1fr} }
 </style>
 </head>
 <body>
 <header>
-  <h1>VulnFusion · Human Triage</h1>
+  <h1>VulnFusion · Projects &amp; Scans</h1>
   <div class="spacer"></div>
   <div class="runbar">
-    <input id="scanTarget" placeholder="example.com" size="18" />
-    <select id="scanScanner"></select>
-    <button id="runBtn">Run scan</button>
+    <select id="projectSelect"><option value="">Select project…</option></select>
+    <button class="secondary" id="newProjectBtn">New project</button>
   </div>
 </header>
 <div class="layout">
   <aside class="sidebar">
     <div style="display:flex;align-items:center;gap:.5rem;margin-bottom:.5rem;">
-      <strong style="font-size:.8rem;">Sites</strong>
+      <strong style="font-size:.8rem;">Projects</strong>
       <button class="secondary" id="refreshBtn" style="padding:.2rem .5rem;font-size:.75rem;">Refresh</button>
     </div>
-    <div id="sites"><div class="muted">Loading…</div></div>
+    <div id="projects"><div class="muted">Loading…</div></div>
+    <div class="panel" id="scanPanel" style="display:none">
+      <strong>Scanners</strong><div class="scanner-grid" id="scannerChecks"></div>
+      <button class="secondary" id="safePreset">Safe</button> <button class="secondary" id="fullPreset">Full</button>
+      <p><label class="muted">AI limit <input id="aiLimit" type="number" min="1" max="100" value="25" style="width:5rem"></label></p>
+      <label style="display:block;margin:.6rem 0;font-size:.78rem"><input id="authorized" type="checkbox"> I confirm authorization to scan</label>
+      <button id="runBtn">Run selected scan</button>
+    </div>
     <div id="joblog"></div>
   </aside>
   <main class="main">
-    <div id="scanHeader" class="muted">Select a scan on the left to triage its findings.</div>
+    <div id="scanHeader" class="muted">Select or create a project.</div>
+    <div id="dashboard"></div>
     <div id="findings"></div>
   </main>
 </div>
 <div id="toast" class="toast"></div>
+<div id="projectModal" class="modal"><div class="modal-card">
+  <h2>New project</h2><div class="form-grid">
+  <label>Name<input id="projectName"></label><label>Target<input id="projectTarget" placeholder="https://example.com"></label>
+  <label>AI limit<input id="projectLimit" type="number" min="1" max="100" value="25"></label>
+  <label class="wide"><span><input id="projectAuthorized" type="checkbox"> I confirm authorization to scan this target</span></label></div>
+  <p><button id="createProjectBtn">Create</button> <button class="secondary" id="closeProjectBtn">Cancel</button></p>
+</div></div>
+<div id="contextModal" class="modal"><div class="modal-card">
+  <h2>Review site context</h2><p class="muted" id="contextSources"></p><div class="source-list" id="contextSourceList"></div><div class="form-grid">
+  <label class="wide">Description<textarea id="contextDescription"></textarea></label>
+  <label class="wide">Business processes (one per line)<textarea id="contextProcesses"></textarea></label>
+  <label>Criticality<select id="contextCriticality"><option>unknown</option><option>low</option><option>medium</option><option>high</option></select></label>
+  <label>Environment<select id="contextEnvironment"><option>unknown</option><option>development</option><option>test</option><option>staging</option><option>production</option></select></label>
+  <label>Sensitive data<select id="contextSensitive"><option value="unknown">unknown</option><option value="true">yes</option><option value="false">no</option></select></label>
+  <label>Authentication<select id="contextAuth"><option value="unknown">unknown</option><option value="true">required</option><option value="false">not required</option></select></label>
+  <label class="wide">Reason<textarea id="contextReason"></textarea></label></div>
+  <p><button id="acceptContextBtn">Accept & continue</button> <button class="secondary" id="skipContextBtn">Continue without context</button> <button class="secondary" id="cancelJobBtn">Cancel scan</button></p>
+</div></div>
 <script>
 const TOKEN = "__TRIAGE_TOKEN__";
 const STATUSES = __STATUSES__;
@@ -661,25 +1123,47 @@ function el(tag, props, children) {
   return node;
 }
 
-function initScanners() {
-  const sel = document.getElementById("scanScanner");
-  SCANNERS.forEach(s => sel.appendChild(el("option", { value: s, text: s })));
-  sel.value = "all";
+let projects = [];
+let currentProject = null;
+let currentJob = null;
+
+function initScanners(defaults) {
+  const box = document.getElementById("scannerChecks"); box.textContent = "";
+  SCANNERS.filter(s => s !== "all").forEach(s => {
+    const input = el("input", { type: "checkbox", value: s });
+    input.checked = (defaults || ["nmap", "nuclei"]).includes(s);
+    box.appendChild(el("label", {}, [input, document.createTextNode(" " + s)]));
+  });
 }
 
-async function loadSites() {
-  const box = document.getElementById("sites");
+function selectProject(project) {
+  currentProject = project;
+  document.getElementById("projectSelect").value = project.project_id;
+  document.getElementById("scanPanel").style.display = "block";
+  document.getElementById("aiLimit").value = project.ai_analysis_limit || 25;
+  document.getElementById("authorized").checked = false;
+  initScanners(project.default_scanners);
+  document.getElementById("scanHeader").textContent = project.name + " · " + project.target;
+}
+
+async function loadProjects() {
+  const box = document.getElementById("projects");
   box.textContent = "";
   let data;
-  try { data = await api("/api/sites"); }
+  try { data = await api("/api/projects"); }
   catch (e) { box.appendChild(el("div", { class: "muted", text: "Error: " + e.message })); return; }
-  if (!data.sites.length) { box.appendChild(el("div", { class: "muted", text: "No scans found yet." })); return; }
-  data.sites.forEach(site => {
+  projects = data.projects;
+  const select = document.getElementById("projectSelect");
+  select.innerHTML = '<option value="">Select project…</option>';
+  if (!projects.length) { box.appendChild(el("div", { class: "muted", text: "No projects yet." })); return; }
+  projects.forEach(project => {
+    select.appendChild(el("option", { value: project.project_id, text: project.name }));
     const wrap = el("div", { class: "site" });
-    wrap.appendChild(el("div", { class: "site-name", text: site.target }));
-    site.scans.forEach(scan => {
+    const name = el("div", { class: "site-name", text: project.name });
+    name.addEventListener("click", () => selectProject(project)); wrap.appendChild(name);
+    (project.runs || []).forEach(scan => {
       const row = el("div", { class: "scan", text: scan.ts + "  ·  " + scan.artifact.replace(".json", "") });
-      row.addEventListener("click", () => selectScan(site.slug, scan.ts, row));
+      row.addEventListener("click", () => { selectProject(project); selectScan(project.slug, scan.ts, row); });
       wrap.appendChild(row);
     });
     box.appendChild(wrap);
@@ -702,6 +1186,38 @@ async function selectScan(slug, ts, row) {
     el("strong", { text: data.target || slug }),
     el("span", { class: "muted", text: "  ·  " + ts + "  ·  " + data.findings.length + " findings" })
   ]));
+  const dashboard = document.getElementById("dashboard"); dashboard.textContent = "";
+  const summary = data.summary || {};
+  const metrics = [["Findings", summary.total_findings || data.findings.length], ["AI analyzed", (data.ai_analysis_summary || {}).analyzed_count || 0], ["AI needs review", (data.ai_analysis_summary || {}).needs_review_count || 0], ["Priority disagreements", (data.ai_analysis_summary || {}).priority_disagreement_count || 0]];
+  const grid = el("div", { class: "summary-grid" });
+  metrics.forEach(m => grid.appendChild(el("div", { class: "metric" }, [el("strong", { text: String(m[1]) }), el("span", { class: "muted", text: m[0] })])));
+  dashboard.appendChild(grid);
+  const distributions = el("div", { class: "distribution" });
+  [["Severity", summary.by_severity || {}], ["Deterministic priority", summary.by_priority || {}]].forEach(group => {
+    const values = Object.entries(group[1]).filter(item => Number(item[1]) > 0);
+    if (!values.length) return;
+    const panel = el("div", { class: "panel" }, [el("strong", { text: group[0] })]);
+    const max = Math.max(...values.map(item => Number(item[1])));
+    values.forEach(item => {
+      const fill = el("div", { class: "distribution-fill", style: "width:" + Math.round(Number(item[1]) * 100 / max) + "%" });
+      panel.appendChild(el("div", { class: "distribution-row" }, [
+        el("span", { text: item[0] }), el("div", { class: "distribution-track" }, [fill]), el("span", { text: String(item[1]) })
+      ]));
+    });
+    distributions.appendChild(panel);
+  });
+  dashboard.appendChild(distributions);
+  if (data.report_available && currentProject) {
+    const reportBtn = el("button", { text: "Open full report" });
+    reportBtn.addEventListener("click", async () => {
+      try {
+        const res = await fetch("/api/projects/" + encodeURIComponent(currentProject.project_id) + "/runs/" + encodeURIComponent(ts) + "/report", { headers: { "X-Triage-Token": TOKEN } });
+        if (!res.ok) throw new Error(String(res.status));
+        window.open(URL.createObjectURL(await res.blob()), "_blank", "noopener");
+      } catch (e) { toast("Report failed: " + e.message, true); }
+    });
+    dashboard.appendChild(reportBtn);
+  }
   if (!data.findings.length) { box.appendChild(el("div", { class: "muted", text: "No findings in this scan." })); return; }
   data.findings.forEach(f => box.appendChild(renderFinding(f)));
 }
@@ -713,6 +1229,7 @@ function renderFinding(f) {
     el("span", { class: "finding-name", text: f.vulnerability_name }),
   ]);
   if (f.priority) top.appendChild(el("span", { class: "badge", text: f.priority }));
+  if (f.ai_priority && f.ai_priority.recommended_priority) top.appendChild(el("span", { class: "badge", text: "AI " + f.ai_priority.recommended_priority }));
   card.appendChild(top);
   if (f.asset_id) card.appendChild(el("div", { class: "asset", text: f.asset_id }));
 
@@ -730,6 +1247,10 @@ function renderFinding(f) {
   paintNow(f.triage);
   card.appendChild(nowLine);
   if (f.ai_applicability) card.appendChild(el("div", { class: "muted", text: "AI advisory: " + f.ai_applicability }));
+  if (f.ai_summary) {
+    card.appendChild(el("p", { text: f.ai_summary.description || "" }));
+    card.appendChild(el("div", { class: "muted", text: "Business impact: " + (f.ai_summary.business_impact || "") }));
+  }
 
   const statusSel = el("select");
   STATUSES.forEach(s => statusSel.appendChild(el("option", { value: s, text: STATUS_LABELS[s] || s })));
@@ -768,9 +1289,10 @@ function renderFinding(f) {
 
 let pollTimer = null;
 async function runScan() {
-  const target = document.getElementById("scanTarget").value.trim();
-  const scanner = document.getElementById("scanScanner").value;
-  if (!target) { toast("Enter a target first.", true); return; }
+  if (!currentProject) { toast("Select a project first.", true); return; }
+  const scanners = Array.from(document.querySelectorAll('#scannerChecks input:checked')).map(n => n.value);
+  if (!scanners.length) { toast("Select at least one scanner.", true); return; }
+  if (!document.getElementById("authorized").checked) { toast("Confirm scan authorization first.", true); return; }
   const btn = document.getElementById("runBtn");
   const logBox = document.getElementById("joblog");
   btn.disabled = true;
@@ -778,9 +1300,10 @@ async function runScan() {
   logBox.textContent = "Starting scan…\\n";
   let job;
   try {
-    job = await api("/api/run-scan", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ target, scanner }) });
+    job = await api("/api/projects/" + encodeURIComponent(currentProject.project_id) + "/scan", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ scanners, ai_analysis_limit: Number(document.getElementById("aiLimit").value), authorization_confirmed: true }) });
   } catch (e) { toast("Could not start: " + e.message, true); btn.disabled = false; return; }
+  currentJob = job.job_id;
   if (pollTimer) clearInterval(pollTimer);
   pollTimer = setInterval(async () => {
     let info;
@@ -788,19 +1311,81 @@ async function runScan() {
     catch (e) { return; }
     logBox.textContent = info.log.join("\\n");
     logBox.scrollTop = logBox.scrollHeight;
+    if (info.phase === "awaiting_context_review" && info.context_draft && !document.getElementById("contextModal").classList.contains("show")) showContextReview(info.context_draft);
     if (info.status !== "running") {
       clearInterval(pollTimer); pollTimer = null; btn.disabled = false;
       toast("Scan " + info.status + (info.returncode != null ? " (exit " + info.returncode + ")" : ""), info.status !== "success");
-      await loadSites();
+      document.getElementById("contextModal").classList.remove("show");
+      await loadProjects();
       if (info.artifact) selectScan(info.artifact.slug, info.artifact.ts, null);
     }
   }, 1500);
 }
 
+function boolValue(id) { const v = document.getElementById(id).value; return v === "unknown" ? null : v === "true"; }
+function showContextReview(draft) {
+  const analysis = draft.analysis || {}; const risk = analysis.risk_context || {};
+  document.getElementById("contextDescription").value = analysis.site_description || "";
+  document.getElementById("contextProcesses").value = (analysis.business_processes || []).join("\\n");
+  document.getElementById("contextCriticality").value = risk.asset_criticality || "unknown";
+  document.getElementById("contextEnvironment").value = risk.environment || "unknown";
+  document.getElementById("contextSensitive").value = risk.sensitive_data == null ? "unknown" : String(risk.sensitive_data);
+  document.getElementById("contextAuth").value = risk.requires_auth == null ? "unknown" : String(risk.requires_auth);
+  document.getElementById("contextReason").value = risk.reason || "Needs human review.";
+  document.getElementById("contextSources").textContent = (draft.pages || []).length + " pages · analysis source: " + (analysis.analysis_source || "fallback") + " · review before scoring";
+  const sourceList = document.getElementById("contextSourceList"); sourceList.textContent = "";
+  [].concat(draft.pages || [], draft.osint || []).forEach(source => {
+    sourceList.appendChild(el("div", { text: (source.id || "source") + " · " + (source.url || source.resource || source.kind || "local evidence") }));
+  });
+  document.getElementById("contextModal").classList.add("show");
+}
+
+async function submitContext(action) {
+  const body = { action };
+  if (action === "accept") {
+    try {
+      const info = await api("/api/jobs/" + encodeURIComponent(currentJob));
+      const draft = info.context_draft || {}; const proposed = (draft.analysis || {}).risk_context || {};
+      const available = [].concat(draft.pages || [], draft.osint || []).map(item => item.id).filter(Boolean);
+      const cited = (proposed.evidence_ids || []).filter(id => available.includes(id));
+      body.description = document.getElementById("contextDescription").value;
+      body.business_processes = document.getElementById("contextProcesses").value.split("\\n").map(s => s.trim()).filter(Boolean);
+      body.risk_context = {
+        asset_criticality: document.getElementById("contextCriticality").value,
+        environment: document.getElementById("contextEnvironment").value,
+        sensitive_data: boolValue("contextSensitive"), requires_auth: boolValue("contextAuth"),
+        confidence: available.length ? Number(proposed.confidence || 0.5) : 0,
+        reason: document.getElementById("contextReason").value,
+        evidence_ids: cited.length ? cited : available.slice(0, 1),
+      };
+    } catch (e) { toast("Context review failed: " + e.message, true); return; }
+  }
+  try { await api("/api/jobs/" + encodeURIComponent(currentJob) + "/context", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body) }); document.getElementById("contextModal").classList.remove("show"); }
+  catch (e) { toast("Context review failed: " + e.message, true); }
+}
+
+async function createProject() {
+  try {
+    const project = await api("/api/projects", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({
+      name:document.getElementById("projectName").value, target:document.getElementById("projectTarget").value,
+      default_scanners:["nmap","nuclei"], ai_analysis_limit:Number(document.getElementById("projectLimit").value),
+      authorization_confirmed:document.getElementById("projectAuthorized").checked }) });
+    document.getElementById("projectModal").classList.remove("show"); await loadProjects(); selectProject(project); toast("Project created.");
+  } catch (e) { toast("Could not create project: " + e.message, true); }
+}
+
 document.getElementById("runBtn").addEventListener("click", runScan);
-document.getElementById("refreshBtn").addEventListener("click", loadSites);
-initScanners();
-loadSites();
+document.getElementById("refreshBtn").addEventListener("click", loadProjects);
+document.getElementById("projectSelect").addEventListener("change", e => { const p = projects.find(x => x.project_id === e.target.value); if (p) selectProject(p); });
+document.getElementById("newProjectBtn").addEventListener("click", () => document.getElementById("projectModal").classList.add("show"));
+document.getElementById("closeProjectBtn").addEventListener("click", () => document.getElementById("projectModal").classList.remove("show"));
+document.getElementById("createProjectBtn").addEventListener("click", createProject);
+document.getElementById("safePreset").addEventListener("click", () => initScanners(["nmap","nuclei"]));
+document.getElementById("fullPreset").addEventListener("click", () => initScanners(["nmap","nuclei","wapiti","nikto","zap"]));
+document.getElementById("acceptContextBtn").addEventListener("click", () => submitContext("accept"));
+document.getElementById("skipContextBtn").addEventListener("click", () => submitContext("skip"));
+document.getElementById("cancelJobBtn").addEventListener("click", () => submitContext("cancel"));
+loadProjects();
 </script>
 </body>
 </html>

@@ -1,7 +1,7 @@
 ---
 type: Pipeline Stage
 title: Structured LLM Finding Analysis
-description: Bounded, evidence-cited applicability and remediation advice after deterministic scoring.
+description: Bounded, evidence-cited applicability, summary, priority, and remediation advice after deterministic scoring.
 resource: utils/llm_finding_analyzer.py
 tags: [vulnfusion, llm, applicability, remediation, evaluation, safety]
 status: stable
@@ -17,10 +17,14 @@ generated:
 # Structured LLM Finding Analysis
 
 After deterministic risk scoring, VulnFusion automatically selects the highest
-priority findings and asks the configured OpenAI-compatible provider for two
+priority findings and asks the configured OpenAI-compatible provider for four
 strict advisory objects:
 
 - `applicability`: status, model-reported confidence, reason, and cited
+  evidence IDs;
+- `ai_priority`: a separate P0-P4 recommendation, confidence, rationale,
+  context revision, and cited evidence IDs;
+- `ai_summary`: consolidated technical description, business impact, and cited
   evidence IDs;
 - `ai_remediation`: one to five steps and one to five verification steps.
 
@@ -36,7 +40,7 @@ response is one JSON object, optionally inside a JSON Markdown fence.
   to three merged-source records remain separately cited.
 - A human-confirmed site profile may be included as context; its revision is
   part of the cache identity.
-- The default cap is the deterministic top 10 (`--ai-analysis-limit`). Other
+- The default cap is the deterministic top 25 (`--ai-analysis-limit`). Other
   findings get `ai_analysis_status=skipped_limit`.
 - Provider, timeout, or malformed response sets
   `ai_analysis_status=unavailable` for that finding. Cache read/write failure
@@ -44,7 +48,7 @@ response is one JSON object, optionally inside a JSON Markdown fence.
   decision.
 - The stage never deletes/suppresses a finding, overwrites scanner
   remediation, changes `vulnerability_name`, or changes deterministic
-  `risk_score`/`priority`.
+  `risk_score`/`priority`; an AI priority disagreement stays separately visible.
 - `--no-ai-analysis` disables the stage. Missing provider settings produce an
   explicit `disabled_not_configured` run summary.
 

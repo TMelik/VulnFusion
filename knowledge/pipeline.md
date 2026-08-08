@@ -50,7 +50,8 @@ optional context discovery/reuse
    Site context never changes dedup identity. See
    [/risk-scoring.md](/risk-scoring.md).
 6. **Advisory finding analysis** — when an LLM provider is configured, the top
-   10 priority findings receive strict applicability/remediation advice. It is
+   25 priority findings receive strict applicability, summary, separate
+   AI-priority, and remediation advice. It is
    cached, bounded, secret-sanitized, and fail-open. Use
    `--no-ai-analysis` or `--ai-analysis-limit`. See
    [/llm-finding-analysis.md](/llm-finding-analysis.md).

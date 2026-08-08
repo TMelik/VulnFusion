@@ -203,6 +203,48 @@ def _sanitize_ai_remediation(value: Any) -> Dict[str, Any] | None:
     return {"steps": steps, "verification": verification}
 
 
+def _sanitize_ai_priority(value: Any) -> Dict[str, Any] | None:
+    """Whitelist one separate advisory priority recommendation."""
+    if not isinstance(value, dict) or set(value) != {
+        "recommended_priority", "confidence", "reason", "evidence_ids", "context_revision"
+    }:
+        return None
+    priority = value.get("recommended_priority")
+    confidence = value.get("confidence")
+    reason = _safe_ai_text(value.get("reason"))
+    evidence_ids = _safe_ai_string_list(value.get("evidence_ids"), limit=20, item_limit=200)
+    context_revision = _safe_ai_text(value.get("context_revision"), limit=200)
+    if (
+        priority not in {"P0", "P1", "P2", "P3", "P4"}
+        or isinstance(confidence, bool)
+        or not isinstance(confidence, (int, float))
+        or not 0.0 <= float(confidence) <= 1.0
+        or not reason
+        or evidence_ids is None
+        or not context_revision
+    ):
+        return None
+    return {
+        "recommended_priority": priority,
+        "confidence": float(confidence),
+        "reason": reason,
+        "evidence_ids": evidence_ids,
+        "context_revision": context_revision,
+    }
+
+
+def _sanitize_ai_summary(value: Any) -> Dict[str, Any] | None:
+    """Whitelist the bounded consolidated finding summary."""
+    if not isinstance(value, dict) or set(value) != {"description", "business_impact", "evidence_ids"}:
+        return None
+    description = _safe_ai_text(value.get("description"), limit=1500)
+    impact = _safe_ai_text(value.get("business_impact"), limit=1000)
+    evidence_ids = _safe_ai_string_list(value.get("evidence_ids"), limit=20, item_limit=200)
+    if not description or not impact or evidence_ids is None:
+        return None
+    return {"description": description, "business_impact": impact, "evidence_ids": evidence_ids}
+
+
 def _sanitize_finding_ai_analysis(cleaned: Dict[str, Any]) -> None:
     """Keep only a coherent public per-finding AI advisory contract."""
     status = cleaned.get("ai_analysis_status")
@@ -210,22 +252,32 @@ def _sanitize_finding_ai_analysis(cleaned: Dict[str, Any]) -> None:
         cleaned.pop("ai_analysis_status", None)
         cleaned.pop("applicability", None)
         cleaned.pop("ai_remediation", None)
+        cleaned.pop("ai_priority", None)
+        cleaned.pop("ai_summary", None)
         return
 
     if status in {"completed", "cached"}:
         applicability = _sanitize_applicability(cleaned.get("applicability"))
         remediation = _sanitize_ai_remediation(cleaned.get("ai_remediation"))
-        if applicability is None or remediation is None:
+        priority = _sanitize_ai_priority(cleaned.get("ai_priority"))
+        summary = _sanitize_ai_summary(cleaned.get("ai_summary"))
+        if applicability is None or remediation is None or priority is None or summary is None:
             cleaned.pop("ai_analysis_status", None)
             cleaned.pop("applicability", None)
             cleaned.pop("ai_remediation", None)
+            cleaned.pop("ai_priority", None)
+            cleaned.pop("ai_summary", None)
             return
         cleaned["applicability"] = applicability
         cleaned["ai_remediation"] = remediation
+        cleaned["ai_priority"] = priority
+        cleaned["ai_summary"] = summary
         return
 
     cleaned.pop("applicability", None)
     cleaned.pop("ai_remediation", None)
+    cleaned.pop("ai_priority", None)
+    cleaned.pop("ai_summary", None)
 
 
 def _sanitize_finding_human_triage(cleaned: Dict[str, Any]) -> None:
@@ -297,6 +349,7 @@ def _sanitize_ai_analysis_summary(value: Any) -> Dict[str, Any] | None:
         "unavailable_count",
         "skipped_limit_count",
         "needs_review_count",
+        "priority_disagreement_count",
         "redaction_count",
         "prompt_tokens",
         "completion_tokens",

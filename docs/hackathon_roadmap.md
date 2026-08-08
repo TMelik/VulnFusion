@@ -17,19 +17,35 @@ criteria. A feature that is merely impressive in a demo belongs in Tier B.
 
 ### Problem hypothesis to validate
 
-Armenian public-interest organizations such as municipalities, schools,
-healthcare providers, civic services, and NGOs may have small security teams
-but receive noisy and overlapping vulnerability findings from several tools.
-Raw scanner severity does not tell them which concrete issue affects a
-critical citizen-facing function, and sending raw evidence to an external LLM
-may leak credentials or session data.
+Armenia is expanding digital services while facing a shortage of cybersecurity
+expertise and active cyber threats. Public-interest organizations and smaller
+teams therefore need to use scarce specialist time carefully. Vulnerability
+scanners help, but their overlapping output still requires manual analysis:
+the analyst must find duplicates, preserve evidence, decide what needs review,
+and turn many tool-specific records into one report.
 
-Do not present this as a proven fact without evidence. During the hackathon,
-validate it with at least one short conversation with a security practitioner,
-public-sector technologist, NGO engineer, mentor, or domain expert. Record only
-non-sensitive notes. If no interview is available, label it explicitly as a
-problem hypothesis and support it with the behavior visible in the scanner
-fixtures: duplicate alerts, generic remediation, and sensitive HTTP evidence.
+Support the Armenia-specific part of this statement with public sources:
+
+- the [USAID Armenia Digital Ecosystem Country Assessment](https://www.usaid.gov/sites/default/files/2024-07/USAID_DECA_Armenia.pdf)
+  describes a mismatch between cybersecurity needs and available expertise;
+- Armenia's official [Law on Cybersecurity](https://hightech.gov.am/articles/laws/%D5%AF%D5%AB%D5%A2%D5%A5%D5%BC%D5%A1%D5%B6%D5%BE%D5%BF%D5%A1%D5%B6%D5%A3%D5%B8%D6%82%D5%A9%D5%B5%D5%A1%D5%B6-%D5%B4%D5%A1%D5%BD%D5%AB%D5%B6-%D6%85%D6%80%D5%A5%D5%B6%D6%84)
+  establishes the importance of vital sectors and critical information
+  infrastructure;
+- the Ministry of High-Tech Industry's [Cybersecurity Hackathon announcement](https://old.hightech.gov.am/en/tegekatvakan-kentron/ayl/norutyunner/cybersecurity-hackathon)
+  explicitly calls for stronger specialist capacity and cooperation among
+  critical-infrastructure actors;
+- CyberHUB-AM's public [2024](https://mdi.am/en/archives/2183) and
+  [2025](https://mdi.am/en/archives/42043) reports provide local examples of
+  the changing threat environment.
+
+These sources establish the public need, not VulnFusion's effectiveness. The
+demo evaluation must separately test the narrower product claim: VulnFusion
+can reduce an analyst's reporting time while preserving known vulnerabilities
+and exposing uncertain merges for review.
+
+Use careful language. VulnFusion assists existing specialists; it does not
+replace security engineers, protect all critical infrastructure, or solve most
+cybersecurity risk by itself.
 
 ### One-sentence solution
 
@@ -82,6 +98,12 @@ Keep two demo paths:
 1. **Reproducible path:** frozen normalized findings and deterministic expected
    outputs for judges and local tests.
 2. **Live path:** an authorized local scan plus configured LLM provider.
+
+For a low-load public demo, use
+`configs/examples/polite_demo_config.yaml`: Nmap discovery plus Nuclei capped at
+5 requests per second. If a manual ZAP scan has already been completed, pass
+its Traditional JSON report with `--zap-report`; this adds ZAP evidence to the
+same pipeline without sending a second ZAP request sequence to the target.
 
 The defense should work even if a scanner or LLM provider is temporarily
 unavailable. A provider failure must leave the original findings and
@@ -281,9 +303,11 @@ Estimated implementation time: **2–3h**.
 
 ### 6. OKF run page
 
-Generate one sanitized OKF page per scan run with links to canonical findings,
-provenance, prompt/schema version, and trust status. Prefer one run page over a
-large new file lifecycle with a page for every finding.
+When a scan needs an OKF run page, write it inside that site's independent
+bundle as `runs/<run-id>.md`, with links to canonical findings, provenance,
+prompt/schema version, the exact profile revision, and trust status. Never put
+run pages from different sites into one target-knowledge bundle. Prefer one run
+page over a large new file lifecycle with a page for every finding.
 
 Keep this in Tier A only if OKF generation is an explicit judging requirement.
 
@@ -291,11 +315,45 @@ Estimated implementation time: **1–2h**.
 
 ### 7. Additional Asset Context
 
-Add `description`, `authentication`, `critical_functions`, and narrow
-per-endpoint overrides only if the existing context cannot express the demo
-scenario. Do not rename current fields during the hackathon.
+The current implementation is manual and post-dedup: `--asset-context-file`
+adds five business fields before risk scoring. It does not perform OSINT or
+feed a site profile into the LLM.
 
-Estimated implementation time: **1–2h**.
+For the hackathon demo, keep the pre-scan context stage small:
+
+1. crawl the homepage and at most two same-site links;
+2. extract page title, meta description, and bounded visible text;
+3. ask the configured LLM for one short description and a short list of
+   business processes, with source IDs;
+4. show the result in the CLI and let the user accept it, replace the
+   description, or skip;
+5. after confirmation, generate a separate
+   Google OKF v0.2 bundle under
+   `data/asset_knowledge/<domain-slug>--<stable-hash>/` with `index.md`,
+   `profile.md`, and `log.md`;
+6. run the scanners and record which confirmed profile revision was used.
+
+Never mix target knowledge into the repository's general `knowledge/` bundle.
+HTTP and HTTPS on the same host may share one target bundle, but different
+hosts, subdomains, non-default service ports, and domains are isolated by
+default. Multiple domain bundles may carry the same human-confirmed
+`organization_id`; that relationship must not automatically merge their facts
+or crawl data.
+
+Do not use broad organization descriptions as duplicate evidence. Only narrow
+technical context such as a source-backed product/version may supplement the
+existing endpoint, parameter, method, port/service, CVE, and scanner anchors.
+
+External web search, DNS/ASN enrichment, deep crawling, and a context cache are
+follow-up work, not demo dependencies. [Google Custom Search JSON API](https://developers.google.com/custom-search/v1/overview)
+is not a good new dependency because it is closed to new customers and
+scheduled for shutdown for existing customers in 2027.
+
+For a quick check, run one site with and without the confirmed description and
+ask a human whether the context makes the report easier to understand. A larger
+accuracy evaluation comes after the hackathon.
+
+Estimated implementation time: **1–2h for the demo path**.
 
 ## Tier C — out of scope
 
@@ -321,7 +379,53 @@ Estimated implementation time: **1–2h**.
 
 ## Minimal evaluation design
 
-Use fixed labels and report both successes and failures.
+Use fixed labels and report both successes and failures. Keep the main
+evaluation understandable: compare a human working from raw evidence with a
+human reviewing VulnFusion's report.
+
+### Main workflow comparison: human-only vs VulnFusion-assisted
+
+Prepare two small, matched datasets from a controlled vulnerable application
+or frozen scanner fixtures. Seed and document the known vulnerabilities before
+the test.
+
+1. **Human-only:** give the analyst raw scanner evidence. Ask them to identify
+   unique vulnerabilities, remove duplicates, prioritize them, preserve source
+   evidence, and create the final report.
+2. **VulnFusion-assisted:** run the matched evidence through VulnFusion. Ask the
+   analyst to review merges and `needs_review` cases, correct mistakes, and
+   approve the final report.
+3. Record total time, final unique findings, known vulnerabilities found,
+   missed vulnerabilities, false merges, false splits, manual corrections, and
+   preserved evidence/source links.
+
+Prefer two participants with an A/B crossover. If only one participant is
+available, use two independent matched datasets and change which mode is run
+first. Do not let a participant repeat the same dataset in both modes, because
+memory would make the second run artificially faster.
+
+The strongest simple result has this form: "review time fell from X to Y while
+all N seeded vulnerabilities remained visible and no additional false merges
+were introduced." Report the real result even if it is weaker.
+
+### Small LLM-role check
+
+The workflow comparison proves product value but does not isolate the LLM.
+Add a panel of 5–10 ambiguous candidate pairs and compare:
+
+- the deterministic result;
+- the structured LLM decision;
+- a human label made from the same evidence.
+
+Report how many LLM decisions match the human label, how many are escalated to
+review, and how many incorrect automatic merges occur. Show at least one useful
+semantic merge, one prevented dangerous merge, and one uncertain review case.
+
+The older four-mode comparison (raw, deterministic-only, one large prompt, and
+VulnFusion) remains useful follow-up evidence, but it is not required for the
+minimal hackathon evaluation.
+
+### Component metrics
 
 | Capability | Baseline | New system | Minimum metrics |
 |---|---|---|---|
@@ -334,6 +438,8 @@ Use fixed labels and report both successes and failures.
 The evaluation report must include:
 
 - dataset size and label definitions;
+- the human-only and VulnFusion-assisted task instructions;
+- analyst time and manual corrections for both modes;
 - model and prompt/schema version;
 - exact command/configuration;
 - aggregate metrics and several case-level examples;

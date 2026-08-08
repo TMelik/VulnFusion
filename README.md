@@ -189,8 +189,14 @@ uv run python main.py --target https://example.com --scanner zap
 # Probe only: print normalized target + detected HTTP behavior
 uv run python main.py --target example.com --probe-only
 
-# Reuse one external scan config for repeatable scanner settings
-uv run python main.py --target example.com --scan-config configs/examples/scan_config.yaml
+# Conservative repeatable demo: Nmap discovery + Nuclei capped at 5 requests/second
+uv run python main.py --target example.com --scanner all \
+  --scan-config configs/examples/polite_demo_config.yaml
+
+# Add a completed manual ZAP scan without starting ZAP again
+uv run python main.py --target example.com --scanner all \
+  --scan-config configs/examples/polite_demo_config.yaml \
+  --zap-report reports/manual-zap-report.json
 
 # Require an HTTP/1.1-compatible path
 uv run python main.py --target https://example.com --http-mode http1
@@ -247,8 +253,9 @@ Both JSON files include `schema_version: "2.0"` and `generated_at` (ISO 8601 UTC
 
 | # | Stage | Output |
 |---|-------|--------|
+| 0 | **Optional Site Context** | `--discover-context` crawls up to three same-site pages, proposes a short description, asks for human confirmation, and writes an isolated per-site OKF bundle |
 | 1 | **Scan / Normalize** | Normalized findings collected from the selected scanners |
-| 2 | **LLM Duplicate Resolution** | Same-target cross-scanner findings that pass a cheap similarity gate are compared through a strict yes/no LLM decision flow; final output preserves merged scanner provenance, not duplicate traces |
+| 2 | **LLM Duplicate Resolution** | Same-target cross-scanner findings that pass a cheap similarity gate are compared through a strict structured LLM decision flow; final output preserves merged scanner provenance, not duplicate traces |
 | 3 | **Compare** | Status: NEW / PERSISTENT / CHANGED / FIXED, plus repeatability/history context for later scoring |
 | 4 | **Asset Context** | Optional JSON/YAML rules from `--asset-context-file` are applied to current findings before scoring |
 | 5 | **Risk Scoring** | Deterministic `risk_score`, `priority`, `risk_factors`, `risk_rationale`, and `summary.by_priority` are derived |
@@ -273,6 +280,8 @@ Allowed exported content:
 - public runtime risk fields: `risk_score`, `priority`, `risk_factors`,
   and `risk_rationale`
 - summary buckets including `summary.by_priority` when scoring is present
+- a compact `asset_knowledge` reference when a human-confirmed site profile was
+  created before the scan
 - minimal execution/report organization metadata such as `generated_at`,
   `tool_versions`, and file paths
 
@@ -292,8 +301,13 @@ Removed from exported JSON/HTML/CLI payloads:
 - The active path uses same-target matching from the normalized finding fields already present in the project: `host`, `scheme`, `port`, `path`, `query_keys`, and `parameter`.
 - Same-target cross-scanner candidates go through a cheap pre-LLM filter that checks overlap such as shared CVE/CWE identifiers and normalized title similarity before the API is called.
 - Only same-target pairs that pass that cheap filter are sent to the configured LLM endpoint.
-- The LLM is instructed to answer with exactly one word: `yes` or `no`.
+- The LLM must return one strict structured JSON decision containing
+  `same_vulnerability`, `confidence`, `reason`, and `canonical_title`.
 - Duplicate decisions are cached in the unified YAML-backed knowledge store, and the final merged finding preserves `source_findings` provenance without exporting raw comparison traces.
+- When structured LLM correlations exist, the end of `report.html` contains a
+  bounded AI Correlation Graph. Solid green links show scanner findings merged
+  into one result; dashed amber links show findings retained for human review.
+  The section is omitted when there are no LLM decisions.
 
 ## Unified Vulnerability Database
 
@@ -574,6 +588,10 @@ uv run python main.py [OPTIONS]
 | `--no-llm-cache` | off | Disable reuse of cached LLM duplicate decisions |
 | `--knowledge-db <path>` | `./data/unified_vulnerabilities.yaml` | Path to the YAML store used for LLM duplicate-resolution cache data |
 | `--asset-context-file <path>` | off | Optional JSON/YAML asset-context rules file applied before runtime risk scoring |
+| `--discover-context` | off | Before scanning, crawl at most three same-site pages and propose a short website/business-process context |
+| `--context-accept` | off | Explicitly accept the proposed description without an interactive prompt |
+| `--context-description <text>` | off | Replace the proposed description with user-reviewed text without prompting |
+| `--context-reviewer <id>` | `local-user` | Human reviewer ID recorded in the generated site OKF bundle |
 | `--http-mode {auto,http1,http2}` | `auto` | Auto-detect by default, or require HTTP/1.1 / HTTP/2 with honest failure when unsupported |
 | `--http-probe-timeout <seconds>` | `8` | Timeout for scheme + HTTP version probing |
 
@@ -589,6 +607,38 @@ cp .env.example .env
 
 uv run python main.py --target https://example.com --scanner nuclei
 ```
+
+### Quick site-context demo
+
+Run the interactive flow:
+
+```bash
+uv run python main.py \
+  --target https://example.com \
+  --scanner nuclei \
+  --discover-context
+```
+
+VulnFusion prints the suggested description, business processes, and source
+URLs. Press Enter to accept it, type a replacement description, or type
+`skip`. A confirmed profile is written before scanner execution to:
+
+```text
+data/asset_knowledge/<host-slug>--<stable-hash>/
+  index.md
+  profile.md
+  log.md
+```
+
+Each host/service identity gets an independent Google Open Knowledge Format
+v0.2 bundle. Different domains and subdomains are never merged automatically.
+The confirmed description is advisory and does not change deterministic risk
+scoring or LLM duplicate anchors. The final HTML report shows the confirmed
+description, reviewer, and short OKF revision so the demo remains traceable.
+
+For a non-interactive demo, add `--context-accept`. If the LLM provider is not
+configured or fails, the page title/meta description is shown as a reviewable
+fallback instead of blocking the scan.
 
 `main.py`, `demo_integration.py`, and `scripts/test_llm_provider.py` load `.env` automatically at startup via `python-dotenv`. Existing environment variables still work, and CLI flags still take precedence over `.env` values. The generic contract is `VULN_MANAGER_LLM_API_KEY`, `VULN_MANAGER_LLM_API_URL`, and `VULN_MANAGER_LLM_MODEL`. Any compatible provider can be used as long as you supply all three values explicitly.
 
@@ -609,12 +659,27 @@ uv run pytest -q -m live_llm --run-live-llm tests/test_llm_duplicate_resolver.py
 
 ### Scan Config Files
 
-Prefer `--scan-config` when you want repeatable scanner settings without adding more scanner-specific CLI flags. A full working example lives at [`configs/examples/scan_config.yaml`](configs/examples/scan_config.yaml).
+Prefer `--scan-config` when you want repeatable scanner settings without adding more scanner-specific CLI flags. For an authorized public-site demo, start with [`configs/examples/polite_demo_config.yaml`](configs/examples/polite_demo_config.yaml). It runs Nmap discovery followed by Nuclei at a hard five-request-per-second ceiling, reduces Nuclei concurrency and retries, and disables the three deeper overlapping web scanners.
 
 ```bash
 uv run python main.py --target example.com --scanner all \
-  --scan-config configs/examples/scan_config.yaml
+  --scan-config configs/examples/polite_demo_config.yaml
 ```
+
+This profile lowers the chance of triggering a target-side rate limit; it cannot
+guarantee that a site will accept the scan. Use it only against an authorized
+target. A target may enforce a lower or adaptive limit, and VulnFusion does not
+rotate IP addresses or identities to bypass that control. Use a staging target
+and an explicitly agreed request budget for Wapiti, Nikto, or ZAP deep scans.
+
+If ZAP was already run manually, export its **Traditional JSON** report and add
+`--zap-report <path>`. The flag enables the otherwise-disabled ZAP source,
+imports that report exactly once, and does not require Docker, a local ZAP
+binary, target probing, or another ZAP scan. VulnFusion validates that the
+report contains the requested target host, copies it into the run's `raw/`
+folder, then sends its findings through the same normalization, deduplication,
+risk, and HTML-report stages. ZAP XML/HTML/SARIF imports are not supported by
+this small demo path.
 
 Supported shape:
 
@@ -674,6 +739,7 @@ Prefer `--scan-config` for repeatable scanner tuning. These direct CLI flags sti
 | `--nikto-args "<args>"` | Extra args forwarded to Nikto |
 | `--zap-timeout <seconds>` | ZAP scan timeout (default: 1200) |
 | `--zap-active-scan` | Add a ZAP AF `activeScan` job before reporting when the resolved template does not already include one |
+| `--zap-report <path>` | Import an existing ZAP Traditional JSON report instead of starting ZAP; also enables ZAP when the scan config disables it |
 | `--zap-args "<args>"` | Extra args forwarded to the ZAP runtime before `-cmd -autorun` |
 | `--zap-af-plan <path>` | Optional custom ZAP AF YAML template. If omitted, vuln-manager uses `configs/zap_test_template.yaml`. |
 | `--http2-proxy-url <url>` | Optional upstream HTTP proxy override for HTTP/2-only routing when a scanner uses proxy mode |
@@ -724,6 +790,10 @@ uv run pytest -q -m zap_docker --run-zap-docker --zap-docker-pull-image \
 ```bash
 # Run the default AF template; bare targets are probed and normalized automatically
 uv run python main.py --target example.com --scanner zap
+
+# Reuse a completed manual ZAP scan without running ZAP again
+uv run python main.py --target example.com --scanner zap \
+  --zap-report reports/manual-zap-report.json
 
 # With custom timeout (default: 1200 s = 20 min)
 uv run python main.py --target https://example.com --scanner zap --zap-timeout 600

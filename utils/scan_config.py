@@ -153,6 +153,9 @@ def resolve_scan_config(
         scanners,
         config_path,
     )
+    if getattr(args, "zap_report", None):
+        scanner_enabled["zap"] = True
+        config_disabled_scanners.discard("zap")
 
     scanner_options = _build_scan_time_scanner_options(
         args,
@@ -530,6 +533,8 @@ def _apply_cli_scanner_overrides(
         zap_options["args"] = shlex.split(args.zap_args)
     if args.zap_af_plan:
         zap_options["af_plan_path"] = args.zap_af_plan
+    if getattr(args, "zap_report", None):
+        zap_options["report_path"] = args.zap_report
     if args.zap_use_proxy:
         zap_options["use_proxy"] = True
     if args.zap_proxy_url and (args.zap_use_proxy or zap_options.get("use_proxy")):

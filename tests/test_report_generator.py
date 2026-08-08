@@ -5,6 +5,7 @@ from utils.report_generator import (
     _extract_cve_ids,
     _group_findings_by_cve,
     _render_correlation,
+    _render_correlation_graph,
     generate_html_report,
     generate_modern_html_report,
 )
@@ -1020,3 +1021,147 @@ def test_report_does_not_replace_vulnerability_name_with_canonical_title():
     # The canonical title only appears as an AI suggestion.
     assert "Suggested canonical title:" in html
     assert "Different Canonical Title" in html
+
+
+def test_report_renders_merged_provenance_in_correlation_graph():
+    finding = _minimal_finding(
+        vulnerability_name="SQL Injection",
+        correlation=_merged_correlation(),
+        source_findings=[
+            {
+                "scanner": "zap",
+                "vulnerability_name": "SQL Injection",
+                "asset_id": "https://example.com/search?q=1",
+                "severity": "high",
+                "meta": {},
+            },
+            {
+                "scanner": "nuclei",
+                "vulnerability_name": "SQL Injection in search parameter",
+                "asset_id": "https://example.com/search?q=1",
+                "severity": "high",
+                "meta": {},
+            },
+        ],
+    )
+
+    html = generate_html_report(_results(finding))
+
+    assert "AI Correlation Graph" in html
+    assert "graph-row-merged" in html
+    assert "LLM merge" in html
+    assert "92% model confidence" in html
+    assert ">zap<" in html
+    assert ">nuclei<" in html
+    assert html.rfind("AI Correlation Graph") > html.find("All Findings")
+
+
+def test_correlation_graph_collapses_reciprocal_review_pair():
+    correlation_a = {
+        "status": "needs_review",
+        "source": "llm",
+        "confidence": 0.74,
+        "reason": "Similar evidence but different parameter anchors",
+        "canonical_title": "Potential SQL Injection",
+        "needs_review": True,
+        "review_candidates": [
+            {
+                "finding_id": "finding-b",
+                "vulnerability_name": "SQL Injection in account",
+                "scanners": ["nuclei"],
+                "confidence": 0.74,
+                "reason": "Similar evidence but different parameter anchors",
+                "canonical_title": "Potential SQL Injection",
+            }
+        ],
+    }
+    correlation_b = {
+        **correlation_a,
+        "review_candidates": [
+            {
+                "finding_id": "finding-a",
+                "vulnerability_name": "SQL Injection in search",
+                "scanners": ["zap"],
+                "confidence": 0.74,
+                "reason": "Similar evidence but different parameter anchors",
+                "canonical_title": "Potential SQL Injection",
+            }
+        ],
+    }
+    findings = [
+        _minimal_finding(
+            vulnerability_name="SQL Injection in search",
+            found_by=["zap"],
+            correlation=correlation_a,
+        ),
+        _minimal_finding(
+            vulnerability_name="SQL Injection in account",
+            found_by=["nuclei"],
+            correlation=correlation_b,
+        ),
+    ]
+
+    graph = _render_correlation_graph(findings)
+
+    assert graph.count('<article class="correlation-graph-row') == 1
+    assert "graph-row-review" in graph
+    assert "Findings retained separately" in graph
+    assert "74% model confidence" in graph
+
+
+def test_correlation_graph_is_omitted_without_llm_correlations():
+    finding = _minimal_finding()
+
+    assert _render_correlation_graph([finding]) == ""
+    assert "AI Correlation Graph" not in generate_html_report(_results(finding))
+
+
+def test_correlation_graph_escapes_all_untrusted_text():
+    payload = '<img src=x onerror="alert(1)">'
+    finding = _minimal_finding(
+        vulnerability_name=payload,
+        found_by=[payload],
+        asset_id=payload,
+        correlation={
+            "status": "needs_review",
+            "source": "llm",
+            "confidence": 0.60,
+            "reason": payload,
+            "canonical_title": payload,
+            "needs_review": True,
+            "review_candidates": [
+                {
+                    "finding_id": "candidate",
+                    "vulnerability_name": payload,
+                    "scanners": [payload],
+                    "confidence": 0.60,
+                    "reason": payload,
+                    "canonical_title": payload,
+                }
+            ],
+        },
+    )
+
+    graph = _render_correlation_graph([finding])
+
+    assert "&lt;img src=x onerror=&quot;alert(1)&quot;&gt;" in graph
+    assert payload not in graph
+
+
+def test_correlation_graph_is_stable_and_limited_to_ten_cases():
+    findings = [
+        _minimal_finding(
+            vulnerability_name=f"Finding {index:02d}",
+            asset_id=f"https://example.com/{index}",
+            found_by=["zap", "nuclei"],
+            correlation=_merged_correlation(confidence=0.90),
+        )
+        for index in reversed(range(11))
+    ]
+
+    graph = _render_correlation_graph(findings)
+
+    assert graph.count('<article class="correlation-graph-row') == 10
+    assert "Showing 10 of 11 correlation cases" in graph
+    assert graph.find("Finding 00") < graph.find("Finding 01")
+    assert "Finding 10" not in graph

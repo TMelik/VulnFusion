@@ -1,0 +1,60 @@
+# Conservative hackathon/demo profile for authorized web targets.
+#
+# It deliberately runs only discovery (Nmap) and the rate-limited Nuclei pass.
+# The deeper overlapping DAST scanners remain disabled; enable them only for a
+# staging environment or another target where you have explicit permission and
+# a separately agreed request budget.
+version: 1
+
+global:
+  scan_mode: automatic
+  http_mode: auto
+  save_raw: true
+  normalize: true
+  risk_scoring: true
+  report: true
+
+scanners:
+  nmap:
+    enabled: true
+    options:
+      ports: "80,443,8080,8443"
+      scripts: []
+      timeout: 240
+      extra_args:
+        - --host-timeout
+        - 120s
+        - --max-retries
+        - "1"
+        - --max-rate
+        - "20"
+        - --scan-delay
+        - 50ms
+
+  nuclei:
+    enabled: true
+    options:
+      severity:
+        - medium
+        - high
+        - critical
+      rate_limit: 5
+      timeout: 600
+      extra_args:
+        - -c
+        - "2"
+        - -bs
+        - "1"
+        - -retries
+        - "0"
+
+  wapiti:
+    enabled: false
+
+  nikto:
+    enabled: false
+
+  zap:
+    # `--zap-report path/to/traditional.json` enables this source as an
+    # offline import and does not start a second ZAP scan.
+    enabled: false

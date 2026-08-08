@@ -24,6 +24,13 @@ adds an `activeScan` job if the resolved template doesn't already have one.
 `report.template` is always forced to `traditional-json`, since that's the
 format the pipeline's ZAP parser expects.
 
+`--zap-report <path>` provides an offline alternative for a completed manual
+scan. It accepts a ZAP Traditional JSON report, does not check or start a ZAP
+runtime, validates that the requested target host is present, copies the input
+into the current run's raw artifacts, and imports it exactly once. Those
+findings use the same normalizer and downstream dedup/risk/report pipeline as a
+live ZAP result.
+
 Adapter-dependent like Wapiti/Nikto (see [/scanners/index.md](/scanners/index.md)).
 ZAP risk `High` maps to unified severity `high`, not `critical` — see the
 severity mapping table in the README's OWASP ZAP section. If Docker is

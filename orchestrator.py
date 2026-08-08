@@ -714,6 +714,29 @@ class ScannerOrchestrator:
             self._skip_route(route, f"Unsupported http mode '{self.http_mode}'."),
         )
 
+    def _plan_offline_input_route(
+        self,
+        scanner: BaseScanner,
+        target: str,
+        options: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Build a no-network route for a scanner consuming an existing artifact."""
+        return {
+            'scanner_type': scanner.scanner_type,
+            'scan_route': 'imported_report',
+            'adapter_mode': 'not_applicable',
+            'adapter_details': None,
+            'transport_detected': 'not_contacted',
+            'skip_reason': None,
+            'scanner_transport_notes': (
+                'Loaded an existing scanner report; this scanner invocation did not contact the target.'
+            ),
+            'target': target,
+            'options': dict(options),
+            'transport_probe': None,
+            'requested_http_mode': self.http_mode,
+        }
+
     def _skip_route(
         self,
         route: Dict[str, Any],
@@ -1154,6 +1177,9 @@ class ScannerOrchestrator:
             'scanner_error': scanner_error,
             'partial_results': partial_results,
             'degraded_execution': degraded_execution,
+            'imported_report': bool(raw_results.get('imported_report')) if raw_results else False,
+            'imported_report_path': raw_results.get('imported_report_path') if raw_results else None,
+            'report_format': raw_results.get('report_format') if raw_results else None,
             'scanner_transport_notes': route.get('scanner_transport_notes', ''),
             'requested_http_mode': route.get('requested_http_mode', self.http_mode),
             'selected_scheme': probe.get('selected_scheme'),
@@ -1443,7 +1469,12 @@ class ScannerOrchestrator:
 
         scanner = self.scanners[name]
 
-        if not scanner.is_available():
+        # Existing-report imports do not require a locally installed scanner and
+        # must not be routed through target transport probing.
+        requested_options = self._strip_internal_option_markers(options)
+        offline_input = scanner.uses_offline_input(requested_options)
+
+        if not offline_input and not scanner.is_available():
             result = {
                 'scanner': name,
                 'target': target,
@@ -1458,10 +1489,15 @@ class ScannerOrchestrator:
             )
             return result
 
-        # Strip config-only markers AFTER the enabled check so the check sees them.
-        requested_options = self._strip_internal_option_markers(options)
+        # Validate after availability unless the invocation is an offline import,
+        # which remains usable even when the scanner executable is absent.
         requested_options = scanner.validate_options(requested_options)
-        route = self._plan_scan_route(scanner, target, requested_options)
+        offline_input = scanner.uses_offline_input(requested_options)
+        route = (
+            self._plan_offline_input_route(scanner, target, requested_options)
+            if offline_input
+            else self._plan_scan_route(scanner, target, requested_options)
+        )
         execution_meta = self._execution_metadata(scanner, route)
 
         if route.get('scan_route') == 'skipped':
@@ -1710,6 +1746,14 @@ class ScannerOrchestrator:
             })
         aggregate['scanner_instances'][execution_key] = instance_meta
 
+        if result.get('imported_report'):
+            aggregate.setdefault('imported_reports', []).append({
+                'scanner': scanner_name,
+                'execution_key': execution_key,
+                'path': result.get('imported_report_path'),
+                'format': result.get('report_format'),
+            })
+
         if 'error' in result:
             aggregate['errors'].append({
                 'scanner': execution_key,
@@ -1906,11 +1950,19 @@ class ScannerOrchestrator:
                     ),
                 })
 
-        web_scanners: List[Tuple[str, BaseScanner]] = [
+        enabled_web_scanners: List[Tuple[str, BaseScanner]] = [
             (name, scanner)
             for name, scanner in self.scanners.items()
             if self._is_web_scanner(name, scanner) and self._scanner_enabled(options.get(name, {}))
         ]
+        offline_web_scanners: List[Tuple[str, BaseScanner]] = []
+        web_scanners: List[Tuple[str, BaseScanner]] = []
+        for name, scanner in enabled_web_scanners:
+            candidate_options = self._strip_internal_option_markers(options.get(name, {}))
+            if scanner.uses_offline_input(candidate_options):
+                offline_web_scanners.append((name, scanner))
+            else:
+                web_scanners.append((name, scanner))
         scan_plan = self._build_discovery_scan_plan(target, web_services, web_scanners)
         probe_fallback_service = None
         if web_scanners and not scan_plan:
@@ -1933,6 +1985,24 @@ class ScannerOrchestrator:
             'probe_fallback_service': probe_fallback_service,
         }
 
+        # Imported reports are target evidence, not live scan-plan entries. Load
+        # each one exactly once even when discovery found several web services.
+        for scanner_name, _scanner in offline_web_scanners:
+            scanner_options = dict(options.get(scanner_name, {}))
+            scanner_options = self._strip_internal_option_markers(scanner_options)
+            result = self.run_scanner(
+                scanner_name,
+                target,
+                scanner_options,
+                normalize,
+                save_raw,
+            )
+            self._record_aggregate_result(
+                all_results,
+                scanner_name,
+                scanner_name,
+                result,
+            )
         # BUG-08 fix: evaluate the early-return condition AFTER scan_plan has been
         # fully built (including the probe-derived fallback).  The original code
         # used 'not scan_plan' before scan_plan was assigned, so the probe fallback
@@ -2218,7 +2288,13 @@ class ScannerOrchestrator:
     @staticmethod
     def _copy_raw_artifact_fields(source: Dict[str, Any], destination: Dict[str, Any]) -> Dict[str, Any]:
         """Copy raw artifact metadata from a raw result onto the public result."""
-        for field in ('raw_artifacts', 'defectdojo_raw_artifact'):
+        for field in (
+            'raw_artifacts',
+            'defectdojo_raw_artifact',
+            'imported_report',
+            'imported_report_path',
+            'report_format',
+        ):
             if source.get(field) is not None:
                 destination[field] = source[field]
         return destination

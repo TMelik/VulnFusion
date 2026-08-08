@@ -208,6 +208,7 @@ class ZapScanner(BaseScanner):
             "timeout",
             "active_scan",
             "af_plan_path",
+            "report_path",
             "use_proxy",
             "proxy_url",
             "original_target",
@@ -221,7 +222,11 @@ class ZapScanner(BaseScanner):
 
     def get_path_option_keys(self) -> set[str]:
         """Resolve user-supplied plan paths relative to the config file."""
-        return {"af_plan_path"}
+        return {"af_plan_path", "report_path"}
+
+    def uses_offline_input(self, options: Optional[Dict[str, Any]] = None) -> bool:
+        """Return True when an existing ZAP report replaces live scanner execution."""
+        return bool(isinstance(options, dict) and options.get("report_path"))
 
     def validate_options(self, options: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         """Validate and normalize user-supplied ZAP options."""
@@ -238,6 +243,7 @@ class ZapScanner(BaseScanner):
         else:
             self._validate_string_option(normalized, "original_target")
         self._normalize_path_option(normalized, "af_plan_path")
+        self._normalize_path_option(normalized, "report_path")
         self._normalize_extra_args(
             normalized,
             forbidden_flags={
@@ -245,6 +251,26 @@ class ZapScanner(BaseScanner):
                 "-cmd",
             },
         )
+        report_path = normalized.get("report_path")
+        if report_path:
+            conflicting = [
+                key
+                for key in ("active_scan", "af_plan_path", "args", "proxy_url", "original_target")
+                if normalized.get(key)
+            ]
+            if normalized.get("use_proxy"):
+                conflicting.append("use_proxy")
+            if conflicting:
+                raise ValueError(
+                    "zap option 'report_path' cannot be combined with live execution option(s): "
+                    + ", ".join(sorted(conflicting))
+                )
+            _, _, valid, issue = self._read_report_file(Path(str(report_path)))
+            if not valid:
+                raise ValueError(
+                    "zap option 'report_path' must be an OWASP ZAP traditional JSON report: "
+                    f"{issue}"
+                )
         return normalized
 
     def _make_safe_slug(self, target: str) -> str:
@@ -363,6 +389,15 @@ class ZapScanner(BaseScanner):
         options = options or {}
         defaults = self.get_default_options()
         timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+        report_path = options.get("report_path")
+        if report_path:
+            return self._import_existing_report(
+                target=target,
+                report_path=Path(str(report_path)),
+                timestamp=timestamp,
+                output_dir=(Path(str(options["output_dir"])) if options.get("output_dir") else None),
+            )
 
         direct_target = self._require_target_url(target, field_name="target")
         if direct_target is None:
@@ -559,6 +594,85 @@ class ZapScanner(BaseScanner):
         result["expected_zap_xml_report_path"] = str(xml_report_path)
         self._attach_defectdojo_xml_artifact(result, xml_report_path)
         return result
+
+    def _import_existing_report(
+        self,
+        *,
+        target: str,
+        report_path: Path,
+        timestamp: str,
+        output_dir: Optional[Path] = None,
+    ) -> Dict[str, Any]:
+        """Load a validated traditional-JSON report without starting ZAP."""
+        raw_data, findings, valid, issue = self._read_report_file(report_path)
+        if not valid:
+            return self._empty_result(
+                target=target,
+                timestamp=timestamp,
+                error=f"Could not import existing ZAP report: {issue}",
+                raw_output_path=str(report_path),
+                imported_report=False,
+            )
+
+        normalized_target = normalize_web_target(target)
+        report_sites = raw_data.get("site", [])
+        if isinstance(report_sites, dict):
+            report_sites = [report_sites]
+        report_hosts = {
+            str(urlparse(str(site.get("@name") or "")).hostname or "").lower()
+            for site in report_sites
+            if isinstance(site, dict)
+        }
+        report_hosts.discard("")
+        target_host = str(urlparse(normalized_target).hostname or "").lower()
+        if report_hosts and target_host not in report_hosts:
+            hosts = ", ".join(sorted(report_hosts))
+            return self._empty_result(
+                target=normalized_target,
+                timestamp=timestamp,
+                error=(
+                    "Existing ZAP report does not contain the requested target host "
+                    f"'{target_host}'. Report host(s): {hosts}"
+                ),
+                imported_report=False,
+            )
+
+        artifact_path = report_path.resolve()
+        if output_dir is not None:
+            try:
+                output_dir.mkdir(parents=True, exist_ok=True)
+                candidate = output_dir / f"zap_imported_{report_path.name}"
+                suffix = 1
+                while candidate.exists() and candidate.resolve() != artifact_path:
+                    candidate = output_dir / f"zap_imported_{report_path.stem}_{suffix}{report_path.suffix}"
+                    suffix += 1
+                if candidate.resolve() != artifact_path:
+                    shutil.copy2(artifact_path, candidate)
+                artifact_path = candidate.resolve()
+            except OSError as exc:
+                return self._empty_result(
+                    target=normalized_target,
+                    timestamp=timestamp,
+                    error=f"Could not copy existing ZAP report into the run artifact directory: {exc}",
+                    imported_report=False,
+                )
+
+        return {
+            "scanner": self.name,
+            "target": normalized_target,
+            "original_target": normalized_target,
+            "timestamp": timestamp,
+            "command": f"import-zap-report {artifact_path}",
+            "raw_output": raw_data,
+            "raw_output_path": str(artifact_path),
+            "stdout": "",
+            "stderr": "",
+            "exit_code": 0,
+            "findings": findings,
+            "imported_report": True,
+            "imported_report_path": str(artifact_path),
+            "report_format": "traditional-json",
+        }
 
     def _build_automation_plan(
         self,
@@ -1460,6 +1574,20 @@ class ZapScanner(BaseScanner):
             return {}, [], False, f"Report file is not a JSON object: {report_path}"
         if "site" not in raw_data:
             return {}, [], False, f"Report file is not a ZAP traditional JSON report: {report_path}"
+
+        sites = raw_data.get("site")
+        if isinstance(sites, dict):
+            sites = [sites]
+        if not isinstance(sites, list):
+            return {}, [], False, f"ZAP report field 'site' must be an object or array: {report_path}"
+        for site in sites:
+            if not isinstance(site, dict):
+                return {}, [], False, f"ZAP report contains a non-object site entry: {report_path}"
+            alerts = site.get("alerts", [])
+            if not isinstance(alerts, list):
+                return {}, [], False, f"ZAP report site field 'alerts' must be an array: {report_path}"
+            if not all(isinstance(alert, dict) for alert in alerts):
+                return {}, [], False, f"ZAP report contains a non-object alert entry: {report_path}"
 
         findings = self._extract_findings_from_raw(raw_data)
         return raw_data, findings, True, None

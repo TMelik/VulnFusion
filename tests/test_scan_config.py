@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
 import main
 from orchestrator import ScannerOrchestrator
@@ -63,6 +64,7 @@ def test_main_help_lists_scan_config_flag():
     assert "--risk-scoring" in result.stdout
     assert "--no-risk-scoring" in result.stdout
     assert "--no-score" in result.stdout
+    assert "--zap-report" in result.stdout
 
 
 class _ConfigCaptureOrchestrator:
@@ -415,6 +417,157 @@ def test_fast_web_smoke_example_config_is_valid(monkeypatch, tmp_path, capsys):
     assert captured["options"]["wapiti"][SCAN_CONFIG_ENABLED_KEY] is False
     assert captured["options"]["nikto"][SCAN_CONFIG_ENABLED_KEY] is False
     assert captured["options"]["zap"][SCAN_CONFIG_ENABLED_KEY] is False
+
+
+def test_polite_demo_example_config_is_valid(monkeypatch, tmp_path, capsys):
+    config_path = ROOT / "configs" / "examples" / "polite_demo_config.yaml"
+
+    rc, captured = _run_main_with_fake_orchestrator(
+        monkeypatch,
+        tmp_path,
+        [
+            "main.py",
+            "--target", "example.com",
+            "--scanner", "all",
+            "--scan-config", str(config_path),
+            "--data-dir", str(tmp_path / "data"),
+            "--json",
+            "--no-dedupe",
+        ],
+    )
+    capsys.readouterr()
+
+    assert rc == 0
+    assert captured["options"]["nmap"] == {
+        "ports": "80,443,8080,8443",
+        "scripts": [],
+        "timeout": 240,
+        "args": [
+            "--host-timeout",
+            "120s",
+            "--max-retries",
+            "1",
+            "--max-rate",
+            "20",
+            "--scan-delay",
+            "50ms",
+        ],
+    }
+    assert captured["options"]["nuclei"] == {
+        "severity": ["medium", "high", "critical"],
+        "rate_limit": 5,
+        "timeout": 600,
+        "args": ["-c", "2", "-bs", "1", "-retries", "0"],
+    }
+    assert captured["options"]["wapiti"][SCAN_CONFIG_ENABLED_KEY] is False
+    assert captured["options"]["nikto"][SCAN_CONFIG_ENABLED_KEY] is False
+    assert captured["options"]["zap"][SCAN_CONFIG_ENABLED_KEY] is False
+
+    effective_path = tmp_path / "run" / "effective_scan_config.json"
+    payload = json.loads(effective_path.read_text(encoding="utf-8"))
+    assert payload["scanners"]["nuclei"]["options"]["rate_limit"] == 5
+    assert payload["scanners"]["nuclei"]["options"]["extra_args"] == [
+        "-c", "2", "-bs", "1", "-retries", "0",
+    ]
+    assert payload["scanners"]["wapiti"]["enabled"] is False
+
+
+def test_polite_demo_profile_builds_rate_limited_scanner_commands(monkeypatch):
+    config_path = ROOT / "configs" / "examples" / "polite_demo_config.yaml"
+    profile = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    captured = {}
+
+    def fake_run(cmd, capture_output=True, text=True, timeout=None):
+        captured[cmd[0]] = {"cmd": list(cmd), "timeout": timeout}
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("scanners.nmap_scanner.subprocess.run", fake_run)
+    monkeypatch.setattr("scanners.nuclei_scanner.subprocess.run", fake_run)
+
+    nmap = NmapScanner()
+    nmap_options = nmap.validate_options(profile["scanners"]["nmap"]["options"])
+    nmap.scan("example.com", nmap_options)
+
+    nuclei = NucleiScanner()
+    nuclei_options = nuclei.validate_options(profile["scanners"]["nuclei"]["options"])
+    nuclei.scan("https://example.com", nuclei_options)
+
+    assert captured["nmap"]["timeout"] == 240
+    assert captured["nmap"]["cmd"][-1] == "example.com"
+    assert captured["nmap"]["cmd"].count("--max-rate") == 1
+    assert captured["nmap"]["cmd"][captured["nmap"]["cmd"].index("--max-rate") + 1] == "20"
+    assert captured["nuclei"]["timeout"] == 600
+    assert captured["nuclei"]["cmd"].count("-rate-limit") == 1
+    assert captured["nuclei"]["cmd"][captured["nuclei"]["cmd"].index("-rate-limit") + 1] == "5"
+    assert captured["nuclei"]["cmd"][-6:] == ["-c", "2", "-bs", "1", "-retries", "0"]
+
+
+def test_zap_report_enables_offline_import_with_polite_profile(monkeypatch, tmp_path, capsys):
+    config_path = ROOT / "configs" / "examples" / "polite_demo_config.yaml"
+    report_path = tmp_path / "manual-zap-report.json"
+    report_path.write_text(
+        json.dumps(
+            {
+                "@version": "2.17.0",
+                "site": [
+                    {
+                        "@name": "https://example.com",
+                        "alerts": [],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    rc, captured = _run_main_with_fake_orchestrator(
+        monkeypatch,
+        tmp_path,
+        [
+            "main.py",
+            "--target", "example.com",
+            "--scanner", "all",
+            "--scan-config", str(config_path),
+            "--zap-report", str(report_path),
+            "--data-dir", str(tmp_path / "data"),
+            "--json",
+            "--no-dedupe",
+        ],
+    )
+    capsys.readouterr()
+
+    assert rc == 0
+    assert captured["options"]["zap"]["report_path"] == str(report_path.resolve())
+    assert captured["options"]["zap"]["timeout"] == 1200
+    assert captured["options"]["zap"]["use_proxy"] is False
+    assert SCAN_CONFIG_ENABLED_KEY not in captured["options"]["zap"]
+
+    effective_path = tmp_path / "run" / "effective_scan_config.json"
+    payload = json.loads(effective_path.read_text(encoding="utf-8"))
+    assert payload["scanners"]["zap"]["enabled"] is True
+    assert payload["scanners"]["zap"]["options"]["report_path"] == str(report_path.resolve())
+
+
+def test_zap_report_rejects_live_zap_execution_flags(monkeypatch, tmp_path, capsys):
+    report_path = tmp_path / "manual-zap-report.json"
+    report_path.write_text(json.dumps({"site": []}), encoding="utf-8")
+
+    with pytest.raises(SystemExit) as excinfo:
+        _run_main_with_fake_orchestrator(
+            monkeypatch,
+            tmp_path,
+            [
+                "main.py",
+                "--target", "example.com",
+                "--scanner", "zap",
+                "--zap-report", str(report_path),
+                "--zap-active-scan",
+            ],
+        )
+
+    captured = capsys.readouterr()
+    assert excinfo.value.code == 2
+    assert "cannot be combined with ZAP execution options" in captured.err
 
 
 def test_main_accepts_valid_json_scan_config(monkeypatch, tmp_path, capsys):

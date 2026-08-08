@@ -52,6 +52,7 @@ from utils.http_transport_adapters import (
     HTTP2_ADAPTER_MODE_BRIDGE,
 )
 from utils.asset_context import apply_asset_context, load_asset_context_file
+from utils.site_context import discover_site_context, write_site_okf_bundle
 from utils.config_loader import DefectDojoFileConfig, load_defectdojo_config
 from utils.risk_scorer import score_vulnerabilities
 from utils.run_folder import create_target_slug, get_scan_results_json_path, update_latest_pointer
@@ -354,6 +355,60 @@ def _apply_asset_context_to_results(results: dict, rules: list[dict]) -> dict:
     for findings in _finding_collections_for_enrichment(results):
         apply_asset_context(findings, rules)
     return results
+
+
+def _scanner_uses_offline_input(scanner: object, options: dict | None = None) -> bool:
+    """Call the optional offline-input capability without breaking lightweight test doubles."""
+    hook = getattr(scanner, "uses_offline_input", None)
+    return bool(hook(options or {})) if callable(hook) else False
+
+
+def _print_site_context_preview(draft: dict, *, stream=None) -> None:
+    """Show only the compact review fields, never raw crawled page text."""
+    stream = stream or sys.stdout
+    analysis = draft.get("analysis") if isinstance(draft, dict) else {}
+    if not isinstance(analysis, dict):
+        analysis = {}
+    print("\n[*] Suggested site context:", file=stream)
+    print(f"    Description: {analysis.get('site_description') or 'Unknown'}", file=stream)
+    processes = analysis.get("business_processes")
+    if isinstance(processes, list) and processes:
+        print("    Business processes:", file=stream)
+        for process in processes:
+            print(f"      - {process}", file=stream)
+    pages = draft.get("pages") if isinstance(draft, dict) else []
+    if isinstance(pages, list) and pages:
+        print("    Sources:", file=stream)
+        for page in pages:
+            if isinstance(page, dict):
+                print(f"      - {page.get('url')}", file=stream)
+
+
+def _review_site_context_description(args: argparse.Namespace, draft: dict) -> str | None:
+    """Return a confirmed/edited description, or None when context is skipped."""
+    analysis = draft.get("analysis") if isinstance(draft, dict) else {}
+    if not isinstance(analysis, dict):
+        analysis = {}
+    suggestion = str(analysis.get("site_description") or "").strip()
+
+    if args.context_description:
+        return str(args.context_description).strip()
+    if args.context_accept:
+        return suggestion or None
+    if args.json or not sys.stdin.isatty():
+        print(
+            "[!] Site context was not confirmed. Use --context-accept or "
+            "--context-description to create the per-site OKF bundle.",
+            file=sys.stderr,
+        )
+        return None
+
+    answer = input(
+        "Accept description [Enter], type a replacement, or type 'skip': "
+    ).strip()
+    if answer.lower() in {"skip", "s"}:
+        return None
+    return answer or suggestion or None
 
 
 def _strip_runtime_risk_fields(results: dict) -> dict:
@@ -1431,6 +1486,33 @@ def main():
         )
 
         parser.add_argument(
+            '--discover-context',
+            action='store_true',
+            help='Before scanning, crawl up to three same-site pages and propose a short site context'
+        )
+
+        parser.add_argument(
+            '--context-accept',
+            action='store_true',
+            help='Accept the proposed site description without an interactive prompt (requires --discover-context)'
+        )
+
+        parser.add_argument(
+            '--context-description',
+            type=str,
+            metavar='TEXT',
+            help='Use this human-reviewed description instead of prompting (requires --discover-context)'
+        )
+
+        parser.add_argument(
+            '--context-reviewer',
+            type=str,
+            default=os.getenv('VULN_MANAGER_CONTEXT_REVIEWER', 'local-user'),
+            metavar='ID',
+            help='Reviewer ID recorded in the generated per-site OKF bundle (default: local-user)'
+        )
+
+        parser.add_argument(
             '--zap-timeout',
             type=int,
             default=1200,
@@ -1442,6 +1524,13 @@ def main():
             '--zap-active-scan',
             action='store_true',
             help='Add a ZAP Automation Framework activeScan job before reporting when the resolved template does not already include one'
+        )
+
+        parser.add_argument(
+            '--zap-report',
+            type=str,
+            metavar='PATH',
+            help='Import an existing OWASP ZAP traditional JSON report instead of starting ZAP; also enables ZAP when disabled by scan config'
         )
 
         parser.add_argument(
@@ -1579,6 +1668,8 @@ def main():
             sys.argv.append("--list-scanners")
 
         args = parser.parse_args()
+        if (args.context_accept or args.context_description) and not args.discover_context:
+            parser.error("--context-accept/--context-description require --discover-context")
         if args.defectdojo_upload and args.no_defectdojo_upload:
             parser.error("--defectdojo-upload and --no-defectdojo-upload cannot be used together")
         if args.defectdojo_auto_create_context and args.defectdojo_no_auto_create_context:
@@ -1604,7 +1695,21 @@ def main():
                 parser.error(str(exc))
         if args.zap_use_proxy and not args.zap_proxy_url:
             parser.error("--zap-use-proxy requires --zap-proxy-url")
+        if args.zap_report and args.scanner not in {'all', 'zap'}:
+            parser.error("--zap-report requires --scanner all or --scanner zap")
+        if args.zap_report and (
+            args.zap_active_scan
+            or args.zap_af_plan
+            or args.zap_args
+            or args.zap_use_proxy
+            or args.zap_proxy_url
+            or args.zap_proxy_original_target
+        ):
+            parser.error(
+                "--zap-report imports an existing report and cannot be combined with ZAP execution options"
+            )
         args.zap_af_plan = _expand_existing_path_argument("--zap-af-plan", args.zap_af_plan, parser)
+        args.zap_report = _expand_existing_path_argument("--zap-report", args.zap_report, parser)
         args.scan_config = _expand_existing_path_argument("--scan-config", args.scan_config, parser)
 
         data_dir = Path(args.data_dir)
@@ -1752,8 +1857,14 @@ def main():
         except ValueError as exc:
             parser.error(str(exc))
 
+        selected_scanner_options = resolved_scan_config.scanner_options.get(args.scanner, {})
+        selected_scanner = orchestrator.scanners.get(args.scanner)
+        selected_offline_input = bool(
+            selected_scanner
+            and _scanner_uses_offline_input(selected_scanner, selected_scanner_options)
+        )
         should_probe_target = args.probe_only or (
-            args.scanner in WEB_SCANNERS
+            args.scanner in WEB_SCANNERS and not selected_offline_input
         )
         target_probe = None
         if should_probe_target and hasattr(orchestrator, 'probe_target'):
@@ -1774,13 +1885,63 @@ def main():
                 print_probe_only_summary(target_probe)
             return 0
 
+        confirmed_asset_knowledge = None
+        if args.discover_context:
+            provider_settings = resolve_llm_duplicate_provider_settings(
+                cli_api_url=args.llm_api_url,
+                cli_api_key=args.llm_api_key,
+                cli_model_name=args.llm_model,
+                env=os.environ,
+            )
+            context_target = (
+                target_probe.get("normalized_target")
+                if isinstance(target_probe, dict) and target_probe.get("normalized_target")
+                else args.target
+            )
+            context_timeout = float(args.llm_timeout if args.llm_timeout is not None else 8.0)
+            try:
+                context_draft = discover_site_context(
+                    str(context_target),
+                    api_url=provider_settings["api_url"],
+                    api_key=provider_settings["api_key"],
+                    model_name=provider_settings["model_name"],
+                    timeout_seconds=context_timeout,
+                )
+                preview_stream = sys.stderr if args.json else sys.stdout
+                _print_site_context_preview(context_draft, stream=preview_stream)
+                confirmed_description = _review_site_context_description(args, context_draft)
+                if confirmed_description:
+                    confirmed_asset_knowledge = write_site_okf_bundle(
+                        data_dir,
+                        context_draft,
+                        confirmed_description=confirmed_description,
+                        reviewer=args.context_reviewer,
+                    )
+                    print(
+                        f"[+] Confirmed site OKF: {confirmed_asset_knowledge['profile_path']}",
+                        file=preview_stream,
+                    )
+                else:
+                    print("[*] Continuing without confirmed site context.", file=preview_stream)
+            except Exception as exc:
+                print(
+                    f"[!] Site context discovery failed; continuing without it: {exc}",
+                    file=sys.stderr,
+                )
+
         options = resolved_scan_config.scanner_options
 
         if args.strict_scanners:
             selected = resolved_scan_config.active_scanners
             unavailable = [
                 name for name in selected
-                if name in orchestrator.scanners and not orchestrator.scanners[name].is_available()
+                if (
+                    name in orchestrator.scanners
+                    and not _scanner_uses_offline_input(
+                        orchestrator.scanners[name], options.get(name, {})
+                    )
+                    and not orchestrator.scanners[name].is_available()
+                )
             ]
             if unavailable:
                 print(f"[!] --strict-scanners: unavailable scanner(s): {', '.join(unavailable)}", file=sys.stderr)
@@ -1848,6 +2009,12 @@ def main():
                             raw_artifacts=scanner_result.get('raw_artifacts'),
                         )
                     ],
+                    'imported_reports': ([{
+                        'scanner': args.scanner,
+                        'execution_key': args.scanner,
+                        'path': scanner_result.get('imported_report_path'),
+                        'format': scanner_result.get('report_format'),
+                    }] if scanner_result.get('imported_report') else []),
                     'summary': {
                         'total_findings': len(results.get('findings', [])),
                         'by_severity': orchestrator._count_by_severity(results.get('findings', []))
@@ -1858,6 +2025,8 @@ def main():
             results['target_probe'] = target_probe
         if target_probe and 'transport_detected' not in results:
             results['transport_detected'] = target_probe
+        if confirmed_asset_knowledge:
+            results['asset_knowledge'] = confirmed_asset_knowledge
 
         _record_missing_scanner_timing(workflow_timer, resolved_scan_config.active_scanners)
         if normalize_output:

@@ -3305,6 +3305,170 @@ def test_zap_uses_report_when_baseline_exits_with_warning_code(monkeypatch, tmp_
     assert result["raw_output"]["site"][0]["@name"] == "https://example.com"
 
 
+def test_zap_existing_report_import_needs_no_runtime_or_target_probe(monkeypatch, tmp_path):
+    report_path = tmp_path / "manual-zap-report.json"
+    report_path.write_text(json.dumps({
+        "@version": "2.17.0",
+        "site": [{
+            "@name": "https://example.com",
+            "alerts": [{
+                "name": "Missing Content Security Policy",
+                "riskdesc": "Medium",
+                "desc": "The response does not define a Content Security Policy.",
+                "solution": "Define an appropriate Content-Security-Policy header.",
+                "instances": [{"uri": "https://example.com/login", "method": "GET"}],
+            }],
+        }],
+    }), encoding="utf-8")
+
+    scanner = ZapScanner()
+    monkeypatch.setattr(
+        scanner,
+        "is_available",
+        lambda: pytest.fail("ZAP availability must not be checked for --zap-report"),
+    )
+    monkeypatch.setattr(
+        "scanners.zap_scanner.subprocess.run",
+        lambda *args, **kwargs: pytest.fail("ZAP subprocess must not run for --zap-report"),
+    )
+
+    orchestrator = ScannerOrchestrator(reports_dir=tmp_path / "runs")
+    orchestrator.register_scanner("zap", scanner)
+    monkeypatch.setattr(
+        orchestrator,
+        "probe_target",
+        lambda target: pytest.fail("Target probing must not run for an imported report"),
+    )
+
+    result = orchestrator.run_scanner(
+        "zap",
+        "example.com",
+        options={"report_path": str(report_path)},
+        normalize=True,
+        save_raw=True,
+    )
+
+    assert result["scan_route"] == "imported_report"
+    assert result["transport_detected"] == "not_contacted"
+    assert result["normalized_findings_count"] == 1
+    assert result["findings"][0]["vulnerability_name"] == "Missing Content Security Policy"
+    assert result["findings"][0]["meta"]["scanner"] == "zap"
+    imported_path = Path(result["imported_report_path"])
+    assert imported_path != report_path.resolve()
+    assert imported_path.parent.name == "raw"
+    assert imported_path.read_text(encoding="utf-8") == report_path.read_text(encoding="utf-8")
+    assert imported_path.with_suffix(".xml").is_file()
+    assert not report_path.with_suffix(".xml").exists()
+    assert result["imported_report"] is True
+    assert result["report_format"] == "traditional-json"
+    assert result["scanner_execution"]["scan_route"] == "imported_report"
+
+
+def test_discovery_mode_imports_one_zap_report_once_for_multiple_web_services(monkeypatch, tmp_path):
+    report_path = tmp_path / "manual-zap-report.json"
+    report_path.write_text(json.dumps({
+        "site": [{
+            "@name": "https://example.com",
+            "alerts": [{
+                "name": "Test Alert",
+                "riskdesc": "Low",
+                "desc": "Imported once.",
+                "solution": "Review.",
+                "instances": [{"uri": "https://example.com/test"}],
+            }],
+        }],
+    }), encoding="utf-8")
+
+    class TwoServiceNmap(BaseScanner):
+        def __init__(self):
+            super().__init__("nmap")
+            self.scanner_type = "network"
+
+        def is_available(self):
+            return True
+
+        def scan(self, target, options=None):
+            return {
+                "scanner": "nmap",
+                "target": target,
+                "timestamp": "2026-08-08T12:00:00Z",
+                "raw_output": "",
+                "exit_code": 0,
+                "findings": [],
+                "discovered_services": [
+                    {
+                        "host": "example.com", "port": 80, "protocol": "tcp",
+                        "state": "open", "service": "http", "service_version": "nginx",
+                        "is_web": True, "web_scheme": "http",
+                    },
+                    {
+                        "host": "example.com", "port": 443, "protocol": "tcp",
+                        "state": "open", "service": "https", "service_version": "nginx",
+                        "is_web": True, "web_scheme": "https",
+                    },
+                ],
+            }
+
+        def normalize(self, raw_results):
+            return []
+
+    zap = ZapScanner()
+    monkeypatch.setattr(zap, "is_available", lambda: False)
+    monkeypatch.setattr(zap, "get_version", lambda: "imported-report")
+    import_calls = []
+    original_import = zap._import_existing_report
+
+    def recording_import(**kwargs):
+        import_calls.append(kwargs["report_path"])
+        return original_import(**kwargs)
+
+    monkeypatch.setattr(zap, "_import_existing_report", recording_import)
+
+    orchestrator = ScannerOrchestrator(reports_dir=tmp_path / "runs")
+    orchestrator.register_scanner("nmap", TwoServiceNmap())
+    orchestrator.register_scanner("zap", zap)
+    orchestrator.set_scan_mode("automatic")
+
+    results = orchestrator.run_all(
+        "example.com",
+        options={"zap": {"report_path": str(report_path)}},
+        save_raw=False,
+    )
+
+    assert import_calls == [report_path.resolve()]
+    assert results["scanners_run"].count("zap") == 1
+    assert results["imported_reports"] == [{
+        "scanner": "zap",
+        "execution_key": "zap",
+        "path": str((Path(results["run_folder"]) / "raw" / "zap_imported_manual-zap-report.json").resolve()),
+        "format": "traditional-json",
+    }]
+    assert results["summary"]["total_findings"] == 1
+    assert len(results["findings_by_scanner"]["zap"]) == 1
+
+
+def test_zap_report_import_rejects_malformed_shape_and_wrong_target(tmp_path):
+    scanner = ZapScanner()
+    malformed_path = tmp_path / "malformed.json"
+    malformed_path.write_text(json.dumps({"site": "not-an-array"}), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="field 'site' must be an object or array"):
+        scanner.validate_options({"report_path": str(malformed_path)})
+
+    wrong_target_path = tmp_path / "wrong-target.json"
+    wrong_target_path.write_text(
+        json.dumps({"site": [{"@name": "https://other.example", "alerts": []}]}),
+        encoding="utf-8",
+    )
+    result = scanner.scan(
+        "example.com",
+        {"report_path": str(wrong_target_path)},
+    )
+
+    assert result["findings"] == []
+    assert "does not contain the requested target host 'example.com'" in result["error"]
+
+
 def test_zap_process_output_summary_prefers_signal_lines_over_boot_logs():
     scanner = ZapScanner()
 

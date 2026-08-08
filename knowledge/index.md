@@ -27,6 +27,9 @@ deeper prose docs where they exist.
 | [unified-vulnerability-db.md](unified-vulnerability-db.md) | Knowledge Store | YAML-backed store caching LLM dedupe decisions and synced scanner vulnerability metadata |
 | [llm-duplicate-resolution.md](llm-duplicate-resolution.md) | Pipeline Stage | Cross-scanner duplicate resolution via a cheap filter + strict structured LLM decision |
 | [llm-effectiveness-evidence.md](llm-effectiveness-evidence.md) | Evaluation Guide | How to compare raw, deterministic, single-prompt, and VulnFusion LLM deduplication |
+| [hackathon-evaluation-rubric.md](hackathon-evaluation-rubric.md) | Evaluation Rubric | Five judging criteria, current evidence, estimated score, and gaps to exceptional results |
+| [pre-scan-context.md](pre-scan-context.md) | Design Note | Current Asset Context boundary and a safe bounded-OSINT plan for source-backed pre-scan context |
+| [polite-scanning.md](polite-scanning.md) | Safety Control | Conservative Nmap + rate-limited Nuclei profile for authorized demos |
 | [risk-scoring.md](risk-scoring.md) | Scoring Model | Deterministic risk score / priority / rationale computed per finding |
 | [defectdojo-integration.md](defectdojo-integration.md) | Integration | Raw-per-scan and merged upload paths to DefectDojo |
 | [scanners/index.md](scanners/index.md) | Index | The five scanner integrations (Nmap, Nuclei, Wapiti, Nikto, ZAP) |

@@ -15,6 +15,7 @@ from utils.schema import PRIORITY_LEVELS, SEVERITY_LEVELS
 
 _SEVERITY_RANK = {severity: index for index, severity in enumerate(SEVERITY_LEVELS)}
 _PRIORITY_RANK = {priority: index for index, priority in enumerate(PRIORITY_LEVELS)}
+_CORRELATION_GRAPH_LIMIT = 10
 
 def _get_severity_color(severity: str, theme: str = 'dark') -> str:
     """Get CSS color for severity badge."""
@@ -539,6 +540,223 @@ def _render_correlation(finding: Dict[str, Any]) -> str:
     )
 
 
+def _correlation_graph_node_key(title: Any, scanners: Any) -> str:
+    """Return a stable label used to suppress reciprocal review pairs."""
+    normalized_title = ' '.join(str(title or 'Unknown').lower().split())
+    scanner_values = scanners if isinstance(scanners, list) else []
+    normalized_scanners = sorted(
+        {
+            str(scanner).strip().lower()
+            for scanner in scanner_values
+            if isinstance(scanner, str) and scanner.strip()
+        }
+    )
+    return f"{normalized_title}|{','.join(normalized_scanners)}"
+
+
+def _correlation_graph_sources(finding: Dict[str, Any]) -> List[Dict[str, str]]:
+    """Return compact scanner-native source nodes for one graph row."""
+    nodes: List[Dict[str, str]] = []
+    source_findings = finding.get('source_findings')
+    if isinstance(source_findings, list):
+        for source in source_findings:
+            if not isinstance(source, dict):
+                continue
+            source_meta = source.get('meta')
+            if not isinstance(source_meta, dict):
+                source_meta = {}
+            scanner = str(source.get('scanner') or source_meta.get('scanner') or 'unknown').strip()
+            title = str(
+                source.get('vulnerability_name')
+                or finding.get('vulnerability_name')
+                or 'Unknown vulnerability'
+            ).strip()
+            asset = str(source.get('asset_id') or finding.get('asset_id') or '').strip()
+            node = {'scanner': scanner or 'unknown', 'title': title, 'asset': asset}
+            if node not in nodes:
+                nodes.append(node)
+
+    if nodes:
+        return nodes[:5]
+
+    title = str(finding.get('vulnerability_name') or 'Unknown vulnerability').strip()
+    asset = _finding_asset_label(finding)
+    scanners = _collect_finding_scanners(finding) or ['unknown']
+    return [
+        {'scanner': scanner, 'title': title, 'asset': asset}
+        for scanner in scanners[:5]
+    ]
+
+
+def _render_correlation_graph_source_node(node: Dict[str, str], *, review: bool = False) -> str:
+    """Render one escaped source/candidate node."""
+    scanner = escape(str(node.get('scanner') or 'unknown'))
+    title = escape(str(node.get('title') or 'Unknown vulnerability'))
+    asset = escape(str(node.get('asset') or ''))
+    review_class = ' graph-node-review' if review else ''
+    asset_html = f'<code class="graph-node-asset">{asset}</code>' if asset else ''
+    return (
+        f'<div class="correlation-graph-node graph-source-node{review_class}">'
+        f'<span class="graph-node-scanner">{scanner}</span>'
+        f'<strong class="graph-node-title">{title}</strong>'
+        f'{asset_html}'
+        '</div>'
+    )
+
+
+def _render_correlation_graph(findings: List[Dict[str, Any]], *, limit: int = _CORRELATION_GRAPH_LIMIT) -> str:
+    """Render a bounded source-findings → LLM-decision graph.
+
+    The graph consumes only the export-safe structured correlation contract.
+    Reciprocal low-confidence pairs are collapsed using scanner/title labels so
+    the same review relationship is not presented twice.
+    """
+    entries: List[Dict[str, Any]] = []
+    seen_review_pairs: set[tuple[str, ...]] = set()
+
+    for finding in findings:
+        if not isinstance(finding, dict):
+            continue
+        correlation = finding.get('correlation')
+        if not isinstance(correlation, dict) or correlation.get('source') != 'llm':
+            continue
+        status = correlation.get('status')
+        if status not in {'merged', 'needs_review'}:
+            continue
+
+        candidates = correlation.get('review_candidates')
+        if not isinstance(candidates, list):
+            candidates = []
+
+        if status == 'needs_review':
+            current_key = _correlation_graph_node_key(
+                finding.get('vulnerability_name'),
+                _collect_finding_scanners(finding),
+            )
+            candidate_keys = [
+                _correlation_graph_node_key(candidate.get('vulnerability_name'), candidate.get('scanners'))
+                for candidate in candidates
+                if isinstance(candidate, dict)
+            ]
+            pair_signature = tuple(sorted({current_key, *candidate_keys}))
+            if pair_signature in seen_review_pairs:
+                continue
+            seen_review_pairs.add(pair_signature)
+
+        entries.append(
+            {
+                'finding': finding,
+                'correlation': correlation,
+                'status': status,
+                'candidates': candidates,
+            }
+        )
+
+    if not entries:
+        return ''
+
+    entries.sort(
+        key=lambda entry: (
+            0 if entry['status'] == 'merged' else 1,
+            str(entry['finding'].get('vulnerability_name') or '').lower(),
+            _finding_asset_label(entry['finding']).lower(),
+            ','.join(_collect_finding_scanners(entry['finding'])),
+        )
+    )
+    total_entries = len(entries)
+    visible_entries = entries[:max(1, limit)]
+    graph_rows = ''
+
+    for entry in visible_entries:
+        finding = entry['finding']
+        correlation = entry['correlation']
+        status = entry['status']
+        candidates = entry['candidates']
+        source_nodes = _correlation_graph_sources(finding)
+        source_html = ''.join(
+            _render_correlation_graph_source_node(node)
+            for node in source_nodes
+        )
+
+        if status == 'needs_review':
+            for candidate in candidates[:4]:
+                if not isinstance(candidate, dict):
+                    continue
+                scanners = candidate.get('scanners')
+                scanner_label = ', '.join(
+                    str(scanner).strip()
+                    for scanner in scanners
+                    if isinstance(scanner, str) and scanner.strip()
+                ) if isinstance(scanners, list) else 'unknown'
+                source_html += _render_correlation_graph_source_node(
+                    {
+                        'scanner': scanner_label or 'unknown',
+                        'title': str(candidate.get('vulnerability_name') or 'Unknown vulnerability'),
+                        'asset': '',
+                    },
+                    review=True,
+                )
+
+        confidence = _correlation_confidence_percent(correlation.get('confidence'))
+        confidence_html = (
+            f'<span class="graph-result-confidence">{confidence}% model confidence</span>'
+            if confidence is not None else ''
+        )
+        reason = escape(str(correlation.get('reason') or '').strip())
+        result_title = escape(str(finding.get('vulnerability_name') or 'Unknown vulnerability'))
+        if status == 'merged':
+            connector_label = 'LLM merge'
+            result_badge = 'Merged'
+            result_subtitle = result_title
+            row_class = 'graph-row-merged'
+        else:
+            connector_label = 'review'
+            result_badge = 'Needs review'
+            result_subtitle = 'Findings retained separately'
+            row_class = 'graph-row-review'
+
+        review_note = ''
+        if status == 'merged' and (correlation.get('needs_review') or candidates):
+            review_note = '<span class="graph-external-review">External candidate still needs review</span>'
+        reason_html = f'<span class="graph-result-reason">{reason}</span>' if reason else ''
+
+        graph_rows += (
+            f'<article class="correlation-graph-row {row_class}">'
+            f'<div class="correlation-graph-sources">{source_html}</div>'
+            '<div class="correlation-graph-connector" aria-hidden="true">'
+            f'<span>{escape(connector_label)}</span><div class="graph-connector-line"></div><b>→</b>'
+            '</div>'
+            '<div class="correlation-graph-node graph-result-node">'
+            f'<span class="graph-result-badge">{result_badge}</span>'
+            f'<strong class="graph-node-title">{result_subtitle}</strong>'
+            f'{confidence_html}{review_note}'
+            f'{reason_html}'
+            '</div>'
+            '</article>'
+        )
+
+    limit_note = ''
+    if total_entries > len(visible_entries):
+        limit_note = (
+            '<p class="section-description correlation-graph-limit">'
+            f'Showing {len(visible_entries)} of {total_entries} correlation cases. '
+            'All details remain available in the finding cards.</p>'
+        )
+
+    return (
+        '<section class="section correlation-graph-section">'
+        '<div class="section-header">'
+        '<h2 class="section-title">AI Correlation Graph</h2>'
+        f'<span class="section-count">{total_entries}</span>'
+        '</div>'
+        '<p class="section-description">Scanner findings on the left remain traceable to '
+        'the merged result or human-review decision on the right.</p>'
+        f'<div class="correlation-graph">{graph_rows}</div>'
+        f'{limit_note}'
+        '</section>'
+    )
+
+
 def _collect_degraded_scanners(finding: Dict[str, Any]) -> List[str]:
     """Return scanner names whose preserved evidence was degraded."""
     degraded: List[str] = []
@@ -630,6 +848,26 @@ def generate_modern_html_report(results: Dict[str, Any]) -> str:
     raw_findings = results.get('all_findings', [])
     findings = raw_findings if isinstance(raw_findings, list) else []
     summary = results.get('summary', {})
+    correlation_graph_section = _render_correlation_graph(findings)
+    asset_knowledge = results.get('asset_knowledge', {})
+    site_context_section = ""
+    if isinstance(asset_knowledge, dict) and str(asset_knowledge.get('description') or '').strip():
+        context_description = escape(str(asset_knowledge['description']).strip())
+        context_reviewer = escape(str(asset_knowledge.get('reviewer') or 'human-reviewed'))
+        context_revision = escape(str(asset_knowledge.get('profile_revision') or '')[:12])
+        site_context_section = f"""
+        <section class="section">
+            <div class="section-header">
+                <h2 class="section-title">Confirmed Site Context</h2>
+            </div>
+            <p class="section-description">{context_description}</p>
+            <div class="risk-metrics">
+                <div><strong>Source:</strong> Per-site Google OKF profile</div>
+                <div><strong>Reviewed by:</strong> {context_reviewer}</div>
+                {f'<div><strong>Revision:</strong> {context_revision}</div>' if context_revision else ''}
+            </div>
+        </section>
+        """
 
     comparison = results.get('comparison', {})
     comparison_summary = comparison.get('summary', {})
@@ -2167,6 +2405,133 @@ def generate_modern_html_report(results: Dict[str, Any]) -> str:
             color: var(--text-muted);
         }}
 
+        .correlation-graph {{
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+        }}
+
+        .correlation-graph-row {{
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) 7rem minmax(0, 1fr);
+            gap: 0.75rem;
+            align-items: center;
+            padding: 1rem;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border);
+            border-radius: 0.75rem;
+        }}
+
+        .correlation-graph-sources {{
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+        }}
+
+        .correlation-graph-node {{
+            display: flex;
+            flex-direction: column;
+            gap: 0.3rem;
+            min-width: 0;
+            padding: 0.75rem;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 0.6rem;
+            overflow-wrap: anywhere;
+        }}
+
+        .graph-row-merged .graph-result-node {{
+            border: 2px solid #22c55e;
+            box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.1);
+        }}
+
+        .graph-row-review .graph-result-node,
+        .graph-node-review {{
+            border: 2px dashed #f59e0b;
+        }}
+
+        .graph-node-scanner,
+        .graph-result-badge {{
+            align-self: flex-start;
+            padding: 0.18rem 0.45rem;
+            border-radius: 999px;
+            background: var(--bg-tertiary);
+            color: var(--text-secondary);
+            font-size: 0.72rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+        }}
+
+        .graph-row-merged .graph-result-badge {{
+            background: rgba(34, 197, 94, 0.16);
+            color: #22c55e;
+        }}
+
+        .graph-row-review .graph-result-badge {{
+            background: rgba(245, 158, 11, 0.16);
+            color: #f59e0b;
+        }}
+
+        .graph-node-title {{
+            color: var(--text-primary);
+            font-size: 0.9rem;
+        }}
+
+        .graph-node-asset,
+        .graph-result-confidence,
+        .graph-result-reason,
+        .graph-external-review {{
+            color: var(--text-muted);
+            font-size: 0.78rem;
+            overflow-wrap: anywhere;
+        }}
+
+        .graph-external-review {{
+            color: #f59e0b;
+            font-weight: 600;
+        }}
+
+        .correlation-graph-connector {{
+            display: grid;
+            grid-template-columns: 1fr auto;
+            grid-template-rows: auto auto;
+            align-items: center;
+            column-gap: 0.35rem;
+            color: var(--text-muted);
+            text-align: center;
+        }}
+
+        .correlation-graph-connector span {{
+            grid-column: 1 / -1;
+            margin-bottom: 0.25rem;
+            font-size: 0.7rem;
+            font-weight: 700;
+            text-transform: uppercase;
+        }}
+
+        .graph-connector-line {{
+            width: 100%;
+            border-top: 2px solid #22c55e;
+        }}
+
+        .graph-row-review .graph-connector-line {{
+            border-top: 2px dashed #f59e0b;
+        }}
+
+        .correlation-graph-connector b {{
+            color: #22c55e;
+            font-size: 1.25rem;
+        }}
+
+        .graph-row-review .correlation-graph-connector b {{
+            color: #f59e0b;
+        }}
+
+        .correlation-graph-limit {{
+            margin-top: 1rem;
+        }}
+
         .finding-description p,
         .finding-remediation p,
         .finding-rationale p,
@@ -2514,6 +2879,16 @@ def generate_modern_html_report(results: Dict[str, Any]) -> str:
             .stats-grid {{
                 grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
             }}
+
+            .correlation-graph-row {{
+                grid-template-columns: 1fr;
+            }}
+
+            .correlation-graph-connector {{
+                width: min(8rem, 60%);
+                margin: 0 auto;
+                transform: rotate(90deg);
+            }}
         }}
     </style>
 </head>
@@ -2578,6 +2953,8 @@ def generate_modern_html_report(results: Dict[str, Any]) -> str:
             </div>
         </section>
 
+        {site_context_section}
+
         {f'''
         <section class="section">
             <div class="section-header">
@@ -2627,6 +3004,7 @@ def generate_modern_html_report(results: Dict[str, Any]) -> str:
 
         {cve_section}
         {no_cve_section}
+        {correlation_graph_section}
     </div>
 
 <script>

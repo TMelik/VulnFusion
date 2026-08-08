@@ -137,6 +137,10 @@ class BaseScanner(ABC):
         """
         return set()
 
+    def uses_offline_input(self, options: Optional[Dict[str, Any]] = None) -> bool:
+        """Return True when this invocation consumes an artifact without contacting the target."""
+        return False
+
     def validate_options(self, options: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         """
         Validate and normalize user-supplied scanner options.

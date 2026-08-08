@@ -31,5 +31,6 @@ def test_help_text_describes_yaml_knowledge_store_without_sqlite(script_name):
 
     assert result.returncode == 0, result.stderr
     assert "--knowledge-db" in help_text
-    assert "yaml store used for llm duplicate-resolution cache data" in normalized_help
+    assert "yaml store used for llm" in normalized_help
+    assert "cache" in normalized_help
     assert "sqlite" not in help_text.lower()

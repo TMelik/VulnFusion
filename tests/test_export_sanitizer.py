@@ -209,3 +209,141 @@ def test_sanitize_results_for_export_preserves_only_safe_structured_correlation(
             }
         ],
     }
+
+
+def test_sanitize_results_preserves_strict_ai_advice_and_safe_summary():
+    finding = _finding(
+        ai_analysis_status="completed",
+        applicability={
+            "status": "likely_valid",
+            "confidence": 0.88,
+            "reason": "The endpoint and parameter are identified.",
+            "evidence_ids": ["finding-description", "finding-evidence"],
+        },
+        ai_remediation={
+            "steps": ["Use parameterized queries."],
+            "verification": ["Repeat the request with safe SQL metacharacters."],
+        },
+    )
+    exported = sanitize_results_for_export(
+        {
+            "all_findings": [finding],
+            "ai_analysis_summary": {
+                "status": "completed",
+                "model": "demo-model",
+                "prompt_version": "finding-analysis-v1",
+                "limit": 10,
+                "selected_count": 1,
+                "analyzed_count": 1,
+                "cached_count": 0,
+                "unavailable_count": 0,
+                "skipped_limit_count": 0,
+                "needs_review_count": 0,
+                "redaction_count": 2,
+                "latency_ms": 125.6789,
+                "prompt_tokens": 120,
+                "completion_tokens": 42,
+                "total_tokens": 162,
+                "estimated_cost_usd": 0.00123456789,
+                "provider_debug": {"secret": "must not leak"},
+            },
+        }
+    )
+
+    cleaned = exported["all_findings"][0]
+    assert cleaned["ai_analysis_status"] == "completed"
+    assert cleaned["applicability"]["confidence"] == 0.88
+    assert cleaned["ai_remediation"]["steps"] == ["Use parameterized queries."]
+    assert exported["ai_analysis_summary"] == {
+        "status": "completed",
+        "model": "demo-model",
+        "prompt_version": "finding-analysis-v1",
+        "limit": 10,
+        "selected_count": 1,
+        "analyzed_count": 1,
+        "cached_count": 0,
+        "unavailable_count": 0,
+        "skipped_limit_count": 0,
+        "needs_review_count": 0,
+        "redaction_count": 2,
+        "prompt_tokens": 120,
+        "completion_tokens": 42,
+        "total_tokens": 162,
+        "latency_ms": 125.679,
+        "estimated_cost_usd": 0.00123457,
+    }
+
+
+def test_sanitize_results_drops_malformed_ai_advice_instead_of_leaking_it():
+    exported = sanitize_results_for_export(
+        {
+            "all_findings": [
+                _finding(
+                    ai_analysis_status="completed",
+                    applicability={
+                        "status": "likely_valid",
+                        "confidence": 4.2,
+                        "reason": "bad confidence",
+                        "evidence_ids": ["finding-description"],
+                        "raw_provider_payload": "must not leak",
+                    },
+                    ai_remediation={
+                        "steps": ["Do something"],
+                        "verification": ["Verify it"],
+                    },
+                )
+            ],
+            "ai_analysis_summary": {"status": "invented", "raw": "must not leak"},
+        }
+    )
+
+    finding = exported["all_findings"][0]
+    assert "ai_analysis_status" not in finding
+    assert "applicability" not in finding
+    assert "ai_remediation" not in finding
+    assert "ai_analysis_summary" not in exported
+
+
+def test_sanitize_results_whitelists_public_site_context_and_drops_local_paths():
+    exported = sanitize_results_for_export(
+        {
+            "all_findings": [],
+            "asset_knowledge": {
+                "description": "Public appointment portal",
+                "reviewer": "demo-user",
+                "profile_revision": "a" * 64,
+                "analysis_source": "llm",
+                "business_processes": ["Appointment booking"],
+                "risk_context": {
+                    "asset_criticality": "medium",
+                    "environment": "production",
+                    "sensitive_data": None,
+                    "requires_auth": True,
+                    "confidence": 0.72,
+                    "reason": "The public pages link to sign-in and booking flows.",
+                    "evidence_ids": ["page-1"],
+                },
+                "bundle_path": "/home/private/data/asset_knowledge/example",
+                "profile_path": "/home/private/data/asset_knowledge/example/profile.md",
+                "raw_osint": {"authorization": "Bearer secret-token"},
+                "unexpected": "must not reach the UI",
+            },
+        }
+    )
+
+    assert exported["asset_knowledge"] == {
+        "description": "Public appointment portal",
+        "reviewer": "demo-user",
+        "profile_revision": "a" * 64,
+        "analysis_source": "llm",
+        "business_processes": ["Appointment booking"],
+        "risk_context": {
+            "asset_criticality": "medium",
+            "environment": "production",
+            "sensitive_data": None,
+            "requires_auth": True,
+            "confidence": 0.72,
+            "reason": "The public pages link to sign-in and booking flows.",
+            "evidence_ids": ["page-1"],
+        },
+    }

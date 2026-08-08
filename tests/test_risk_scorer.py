@@ -376,6 +376,22 @@ def test_unauthenticated_description_is_not_mistaken_for_auth_required():
     assert "authentication required" not in result["risk_rationale"]
 
 
+def test_confirmed_global_requires_auth_context_overrides_text_heuristic():
+    finding = _finding(
+        {"confidence": "high"},
+        vulnerability_name="Administrative endpoint exposed",
+        severity="high",
+        description="The administrative endpoint appears reachable without authentication.",
+        asset_id="https://admin.example.com",
+    )
+
+    result = calculate_risk_score(finding, {"requires_auth": True})
+
+    assert result["risk_factors"]["business_context_inputs"]["requires_auth"] is True
+    assert result["risk_factors"]["requires_auth"] < 0
+    assert "authentication required" in result["risk_rationale"]
+
+
 def test_low_signal_header_finding_stays_low_priority_even_with_strong_context():
     finding = _finding(
         {

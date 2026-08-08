@@ -22,14 +22,15 @@ deeper prose docs where they exist.
 
 | File | Type | Summary |
 |------|------|---------|
-| [pipeline.md](pipeline.md) | Pipeline | End-to-end scan → normalize → dedupe → compare → score → save/report flow |
-| [schema.md](schema.md) | Data Schema | The normalized finding schema (v2.0) and its validator |
-| [unified-vulnerability-db.md](unified-vulnerability-db.md) | Knowledge Store | YAML-backed store caching LLM dedupe decisions and synced scanner vulnerability metadata |
+| [pipeline.md](pipeline.md) | Pipeline | Context → scan/import → correlate → score → advise → save/report flow |
+| [schema.md](schema.md) | Data Schema | Scanner-native schema plus strict correlation, risk, and advisory AI fields |
+| [unified-vulnerability-db.md](unified-vulnerability-db.md) | Knowledge Store | YAML-backed scanner knowledge and versioned structured LLM decision caches |
 | [llm-duplicate-resolution.md](llm-duplicate-resolution.md) | Pipeline Stage | Cross-scanner duplicate resolution via a cheap filter + strict structured LLM decision |
+| [llm-finding-analysis.md](llm-finding-analysis.md) | Pipeline Stage | Bounded evidence-cited applicability/remediation advice, cache, metrics, and evaluation |
 | [llm-effectiveness-evidence.md](llm-effectiveness-evidence.md) | Evaluation Guide | How to compare raw, deterministic, single-prompt, and VulnFusion LLM deduplication |
 | [hackathon-evaluation-rubric.md](hackathon-evaluation-rubric.md) | Evaluation Rubric | Five judging criteria, current evidence, estimated score, and gaps to exceptional results |
-| [pre-scan-context.md](pre-scan-context.md) | Design Note | Current Asset Context boundary and a safe bounded-OSINT plan for source-backed pre-scan context |
-| [polite-scanning.md](polite-scanning.md) | Safety Control | Conservative Nmap + rate-limited Nuclei profile for authorized demos |
+| [pre-scan-context.md](pre-scan-context.md) | Pipeline Stage | Implemented bounded HTTP/DNS/TLS context, human confirmation, and isolated OKF reuse |
+| [polite-scanning.md](polite-scanning.md) | Safety Control | Polite default profile plus explicit passive ZAP and offline-import routes |
 | [risk-scoring.md](risk-scoring.md) | Scoring Model | Deterministic risk score / priority / rationale computed per finding |
 | [defectdojo-integration.md](defectdojo-integration.md) | Integration | Raw-per-scan and merged upload paths to DefectDojo |
 | [scanners/index.md](scanners/index.md) | Index | The five scanner integrations (Nmap, Nuclei, Wapiti, Nikto, ZAP) |

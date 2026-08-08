@@ -1,0 +1,44 @@
+# Conservative passive-only ZAP Automation Framework template for authorized
+# hackathon demos. VulnFusion rewrites the context, URL, maxDuration, and report
+# paths at runtime. With the polite profile's 120-second timeout, both managed
+# maxDuration values resolve to 2 minutes.
+env:
+  parameters:
+    failOnError: false
+    failOnWarning: false
+    continueOnFailure: true
+    progressToStdout: true
+  contexts:
+    - name: scan-target-template
+      urls:
+        - https://example.com/
+      includePaths:
+        - ^https://example\.com(?:/.*)?$
+
+jobs:
+  - type: passiveScan-config
+    parameters:
+      scanOnlyInScope: true
+
+  - type: spider
+    parameters:
+      context: scan-target-template
+      url: https://example.com/
+      maxDuration: 2
+      maxDepth: 2
+      maxChildren: 10
+      threadCount: 1
+      postForm: false
+      processForm: false
+
+  - type: passiveScan-wait
+    parameters:
+      maxDuration: 2
+
+  - type: report
+    parameters:
+      template: traditional-json
+      reportDir: /zap/wrk
+      reportFile: zap-report.json
+      reportTitle: ZAP polite template placeholder
+      reportDescription: Conservative passive-only ZAP scan for VulnFusion demos.

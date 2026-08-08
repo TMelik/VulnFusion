@@ -14,6 +14,25 @@ from typing import Any, Dict, Iterable, List
 from utils.secret_sanitizer import sanitize_secrets
 
 
+_AI_ANALYSIS_STATUSES = {"completed", "cached", "unavailable", "skipped_limit"}
+_APPLICABILITY_STATUSES = {
+    "likely_false_positive",
+    "valid_but_not_applicable",
+    "likely_valid",
+    "needs_review",
+}
+_AI_SUMMARY_STATUSES = {
+    "completed",
+    "partial",
+    "disabled_not_configured",
+    "disabled_by_user",
+    "unavailable",
+}
+_SITE_CONTEXT_CRITICALITIES = {"high", "medium", "low", "unknown"}
+_SITE_CONTEXT_ENVIRONMENTS = {
+    "production", "staging", "development", "test", "unknown"
+}
+
 _FORBIDDEN_RESULT_KEYS = {
     "asset_criticality",
     "business_context",
@@ -125,6 +144,191 @@ def _safe_correlation_text(value: Any, *, limit: int = 1000) -> str:
     return str(value).strip()[:limit] if isinstance(value, str) else ""
 
 
+def _safe_ai_text(value: Any, *, limit: int = 1000) -> str:
+    """Return bounded text for public advisory AI fields."""
+    return str(value).strip()[:limit] if isinstance(value, str) else ""
+
+
+def _safe_ai_string_list(value: Any, *, limit: int = 5, item_limit: int = 500) -> List[str] | None:
+    """Return a bounded non-empty string list or None when malformed."""
+    if not isinstance(value, list) or not value or len(value) > limit:
+        return None
+    cleaned = [_safe_ai_text(item, limit=item_limit) for item in value]
+    if any(not item for item in cleaned):
+        return None
+    return cleaned
+
+
+def _sanitize_applicability(value: Any) -> Dict[str, Any] | None:
+    """Whitelist one structured applicability assessment."""
+    if not isinstance(value, dict) or set(value) != {
+        "status", "confidence", "reason", "evidence_ids"
+    }:
+        return None
+    status = value.get("status")
+    confidence = value.get("confidence")
+    reason = _safe_ai_text(value.get("reason"))
+    evidence_ids = _safe_ai_string_list(value.get("evidence_ids"), limit=20, item_limit=200)
+    if (
+        status not in _APPLICABILITY_STATUSES
+        or isinstance(confidence, bool)
+        or not isinstance(confidence, (int, float))
+        or not 0.0 <= float(confidence) <= 1.0
+        or not reason
+        or evidence_ids is None
+    ):
+        return None
+    return {
+        "status": status,
+        "confidence": float(confidence),
+        "reason": reason,
+        "evidence_ids": evidence_ids,
+    }
+
+
+def _sanitize_ai_remediation(value: Any) -> Dict[str, Any] | None:
+    """Whitelist advisory remediation and verification lists."""
+    if not isinstance(value, dict) or set(value) != {"steps", "verification"}:
+        return None
+    steps = _safe_ai_string_list(value.get("steps"))
+    verification = _safe_ai_string_list(value.get("verification"))
+    if steps is None or verification is None:
+        return None
+    return {"steps": steps, "verification": verification}
+
+
+def _sanitize_finding_ai_analysis(cleaned: Dict[str, Any]) -> None:
+    """Keep only a coherent public per-finding AI advisory contract."""
+    status = cleaned.get("ai_analysis_status")
+    if status not in _AI_ANALYSIS_STATUSES:
+        cleaned.pop("ai_analysis_status", None)
+        cleaned.pop("applicability", None)
+        cleaned.pop("ai_remediation", None)
+        return
+
+    if status in {"completed", "cached"}:
+        applicability = _sanitize_applicability(cleaned.get("applicability"))
+        remediation = _sanitize_ai_remediation(cleaned.get("ai_remediation"))
+        if applicability is None or remediation is None:
+            cleaned.pop("ai_analysis_status", None)
+            cleaned.pop("applicability", None)
+            cleaned.pop("ai_remediation", None)
+            return
+        cleaned["applicability"] = applicability
+        cleaned["ai_remediation"] = remediation
+        return
+
+    cleaned.pop("applicability", None)
+    cleaned.pop("ai_remediation", None)
+
+
+def _sanitize_ai_analysis_summary(value: Any) -> Dict[str, Any] | None:
+    """Whitelist non-sensitive aggregate LLM analysis diagnostics."""
+    if not isinstance(value, dict) or value.get("status") not in _AI_SUMMARY_STATUSES:
+        return None
+    cleaned: Dict[str, Any] = {"status": value["status"]}
+    model = _safe_ai_text(value.get("model"), limit=200)
+    if model:
+        cleaned["model"] = model
+    prompt_version = _safe_ai_text(value.get("prompt_version"), limit=100)
+    if prompt_version:
+        cleaned["prompt_version"] = prompt_version
+    for key in (
+        "limit",
+        "selected_count",
+        "analyzed_count",
+        "cached_count",
+        "unavailable_count",
+        "skipped_limit_count",
+        "needs_review_count",
+        "redaction_count",
+        "prompt_tokens",
+        "completion_tokens",
+        "total_tokens",
+    ):
+        item = value.get(key)
+        if isinstance(item, int) and not isinstance(item, bool) and item >= 0:
+            cleaned[key] = item
+    latency_ms = value.get("latency_ms")
+    if (
+        isinstance(latency_ms, (int, float))
+        and not isinstance(latency_ms, bool)
+        and float(latency_ms) >= 0.0
+    ):
+        cleaned["latency_ms"] = round(float(latency_ms), 3)
+    cost = value.get("estimated_cost_usd")
+    if cost is None:
+        cleaned["estimated_cost_usd"] = None
+    elif isinstance(cost, (int, float)) and not isinstance(cost, bool) and float(cost) >= 0.0:
+        cleaned["estimated_cost_usd"] = round(float(cost), 8)
+    return cleaned
+
+
+def _sanitize_site_risk_context(value: Any) -> Dict[str, Any] | None:
+    """Whitelist the human-confirmed risk proposal stored in a site profile."""
+    expected = {
+        "asset_criticality", "environment", "sensitive_data", "requires_auth",
+        "confidence", "reason", "evidence_ids",
+    }
+    if not isinstance(value, dict) or set(value) != expected:
+        return None
+    criticality = value.get("asset_criticality")
+    environment = value.get("environment")
+    confidence = value.get("confidence")
+    if criticality not in _SITE_CONTEXT_CRITICALITIES or environment not in _SITE_CONTEXT_ENVIRONMENTS:
+        return None
+    if any(value.get(key) is not None and not isinstance(value.get(key), bool) for key in ("sensitive_data", "requires_auth")):
+        return None
+    if isinstance(confidence, bool) or not isinstance(confidence, (int, float)) or not 0.0 <= float(confidence) <= 1.0:
+        return None
+    reason = _safe_ai_text(value.get("reason"), limit=500)
+    raw_evidence_ids = value.get("evidence_ids")
+    evidence_ids = None
+    if isinstance(raw_evidence_ids, list) and len(raw_evidence_ids) <= 20:
+        candidate_ids = [_safe_ai_text(item, limit=200) for item in raw_evidence_ids]
+        if all(candidate_ids):
+            evidence_ids = candidate_ids
+    if not reason or evidence_ids is None:
+        return None
+    return {
+        "asset_criticality": criticality,
+        "environment": environment,
+        "sensitive_data": value.get("sensitive_data"),
+        "requires_auth": value.get("requires_auth"),
+        "confidence": float(confidence),
+        "reason": reason,
+        "evidence_ids": evidence_ids,
+    }
+
+
+def _sanitize_asset_knowledge(value: Any) -> Dict[str, Any] | None:
+    """Keep only bounded display fields from the per-site OKF profile reference."""
+    if not isinstance(value, dict):
+        return None
+    description = _safe_ai_text(value.get("description"), limit=1000)
+    reviewer = _safe_ai_text(value.get("reviewer"), limit=100)
+    revision = _safe_ai_text(value.get("profile_revision"), limit=128)
+    if not description or not reviewer or not revision:
+        return None
+    cleaned: Dict[str, Any] = {
+        "description": description,
+        "reviewer": reviewer,
+        "profile_revision": revision,
+    }
+    analysis_source = _safe_ai_text(value.get("analysis_source"), limit=50)
+    if analysis_source:
+        cleaned["analysis_source"] = analysis_source
+    processes = value.get("business_processes")
+    if isinstance(processes, list) and processes:
+        safe_processes = _safe_ai_string_list(processes, limit=5, item_limit=300)
+        if safe_processes is not None:
+            cleaned["business_processes"] = safe_processes
+    risk_context = _sanitize_site_risk_context(value.get("risk_context"))
+    if risk_context is not None:
+        cleaned["risk_context"] = risk_context
+    return cleaned
+
+
 def _sanitize_correlation(value: Any) -> Dict[str, Any] | None:
     """Whitelist the structured LLM correlation shape used by the UI."""
     if not isinstance(value, dict):
@@ -204,6 +408,7 @@ def sanitize_finding_for_export(finding: Any) -> Dict[str, Any] | Any:
         cleaned.pop(key, None)
 
     cleaned["meta"] = _sanitize_meta(cleaned.get("meta"))
+    _sanitize_finding_ai_analysis(cleaned)
 
     if "correlation" in cleaned:
         correlation = _sanitize_correlation(cleaned.get("correlation"))
@@ -236,6 +441,20 @@ def sanitize_results_for_export(results: Dict[str, Any]) -> Dict[str, Any]:
 
     for key in _FORBIDDEN_RESULT_KEYS:
         export.pop(key, None)
+
+    if "ai_analysis_summary" in export:
+        summary = _sanitize_ai_analysis_summary(export.get("ai_analysis_summary"))
+        if summary is None:
+            export.pop("ai_analysis_summary", None)
+        else:
+            export["ai_analysis_summary"] = summary
+
+    if "asset_knowledge" in export:
+        asset_knowledge = _sanitize_asset_knowledge(export.get("asset_knowledge"))
+        if asset_knowledge is None:
+            export.pop("asset_knowledge", None)
+        else:
+            export["asset_knowledge"] = asset_knowledge
 
     if "all_findings" in export:
         export["all_findings"] = _sanitize_finding_list(export.get("all_findings"))

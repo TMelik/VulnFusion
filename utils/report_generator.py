@@ -540,6 +540,140 @@ def _render_correlation(finding: Dict[str, Any]) -> str:
     )
 
 
+def _render_ai_advisory(finding: Dict[str, Any]) -> str:
+    """Render advisory applicability/remediation separately from scanner evidence."""
+    status = str(finding.get('ai_analysis_status') or '').strip().lower()
+    if status not in {'completed', 'cached', 'unavailable', 'skipped_limit'}:
+        return ''
+    if status == 'unavailable':
+        return (
+            '<div class="ai-advisory ai-advisory-unavailable">'
+            '<div class="ai-advisory-title">AI analysis unavailable</div>'
+            '<p>The original finding and deterministic priority are unchanged.</p>'
+            '</div>'
+        )
+    if status == 'skipped_limit':
+        return (
+            '<div class="ai-advisory ai-advisory-skipped">'
+            '<div class="ai-advisory-title">AI analysis not selected</div>'
+            '<p>This finding was outside the configured per-run analysis limit.</p>'
+            '</div>'
+        )
+
+    applicability = finding.get('applicability')
+    remediation = finding.get('ai_remediation')
+    if not isinstance(applicability, dict) or not isinstance(remediation, dict):
+        return ''
+    status_labels = {
+        'likely_false_positive': 'Likely false positive',
+        'valid_but_not_applicable': 'Valid but not applicable',
+        'likely_valid': 'Likely valid',
+        'needs_review': 'Needs review',
+    }
+    applicability_status = str(applicability.get('status') or '')
+    if applicability_status not in status_labels:
+        return ''
+    confidence = applicability.get('confidence')
+    confidence_text = ''
+    if (
+        isinstance(confidence, (int, float))
+        and not isinstance(confidence, bool)
+        and 0.0 <= float(confidence) <= 1.0
+    ):
+        confidence_text = f'{round(float(confidence) * 100)}% model confidence'
+    reason = escape(str(applicability.get('reason') or '').strip())
+    evidence_ids = applicability.get('evidence_ids')
+    evidence_text = ', '.join(
+        escape(str(item))
+        for item in evidence_ids
+        if isinstance(item, str) and item.strip()
+    ) if isinstance(evidence_ids, list) else ''
+    steps = remediation.get('steps')
+    verification = remediation.get('verification')
+    steps_html = ''.join(
+        f'<li>{escape(str(item))}</li>'
+        for item in steps
+        if isinstance(item, str) and item.strip()
+    ) if isinstance(steps, list) else ''
+    verification_html = ''.join(
+        f'<li>{escape(str(item))}</li>'
+        for item in verification
+        if isinstance(item, str) and item.strip()
+    ) if isinstance(verification, list) else ''
+    cache_badge = '<span class="badge ai-cache-badge">Cached</span>' if status == 'cached' else ''
+    review_class = ' ai-advisory-review' if applicability_status == 'needs_review' else ''
+    return f'''
+        <div class="ai-advisory{review_class}">
+            <div class="ai-advisory-header">
+                <div class="ai-advisory-title">Advisory AI Analysis</div>
+                <div class="ai-advisory-badges">
+                    <span class="badge ai-applicability-badge">{escape(status_labels[applicability_status])}</span>
+                    {f'<span class="badge ai-confidence-badge">{confidence_text}</span>' if confidence_text else ''}
+                    {cache_badge}
+                </div>
+            </div>
+            {f'<p class="ai-advisory-reason">{reason}</p>' if reason else ''}
+            {f'<div class="ai-evidence-ids"><strong>Evidence:</strong> {evidence_text}</div>' if evidence_text else ''}
+            {f'<div class="ai-guidance"><strong>Suggested remediation</strong><ul>{steps_html}</ul></div>' if steps_html else ''}
+            {f'<div class="ai-guidance"><strong>Verification</strong><ul>{verification_html}</ul></div>' if verification_html else ''}
+            <div class="ai-advisory-limit">Advisory only — scanner evidence and deterministic risk remain authoritative.</div>
+        </div>
+    '''
+
+
+def _render_ai_analysis_summary(results: Dict[str, Any]) -> str:
+    """Render bounded run-level diagnostics without provider payloads or secrets."""
+    summary = results.get('ai_analysis_summary')
+    if not isinstance(summary, dict):
+        return ''
+    status = str(summary.get('status') or '').strip()
+    if not status:
+        return ''
+    metrics = [
+        ('Status', status.replace('_', ' ').title()),
+        ('Analyzed', summary.get('analyzed_count')),
+        ('Cached', summary.get('cached_count')),
+        ('Unavailable', summary.get('unavailable_count')),
+        ('Needs review', summary.get('needs_review_count')),
+        ('Skipped by limit', summary.get('skipped_limit_count')),
+        ('Redactions', summary.get('redaction_count')),
+        ('Tokens', summary.get('total_tokens')),
+    ]
+    cards = ''.join(
+        '<div class="ai-run-metric">'
+        f'<span class="ai-run-metric-label">{escape(label)}</span>'
+        f'<span class="ai-run-metric-value">{escape(str(value))}</span>'
+        '</div>'
+        for label, value in metrics
+        if value is not None
+    )
+    latency = summary.get('latency_ms')
+    if isinstance(latency, (int, float)) and not isinstance(latency, bool):
+        cards += (
+            '<div class="ai-run-metric"><span class="ai-run-metric-label">Latency</span>'
+            f'<span class="ai-run-metric-value">{escape(f"{float(latency):.0f} ms")}</span></div>'
+        )
+    cost = summary.get('estimated_cost_usd')
+    if isinstance(cost, (int, float)) and not isinstance(cost, bool):
+        cards += (
+            '<div class="ai-run-metric"><span class="ai-run-metric-label">Estimated cost</span>'
+            f'<span class="ai-run-metric-value">${float(cost):.6f}</span></div>'
+        )
+    model = escape(str(summary.get('model') or '').strip())
+    return f'''
+        <section class="section">
+            <div class="section-header">
+                <h2 class="section-title">AI Analysis Run</h2>
+            </div>
+            <p class="section-description">
+                Structured advisory analysis with fail-open handling. No finding is suppressed automatically.
+                {f'Model: {model}.' if model else ''}
+            </p>
+            <div class="ai-run-grid">{cards}</div>
+        </section>
+    '''
+
+
 def _correlation_graph_node_key(title: Any, scanners: Any) -> str:
     """Return a stable label used to suppress reciprocal review pairs."""
     normalized_title = ' '.join(str(title or 'Unknown').lower().split())
@@ -849,12 +983,41 @@ def generate_modern_html_report(results: Dict[str, Any]) -> str:
     findings = raw_findings if isinstance(raw_findings, list) else []
     summary = results.get('summary', {})
     correlation_graph_section = _render_correlation_graph(findings)
+    ai_analysis_summary_section = _render_ai_analysis_summary(results)
     asset_knowledge = results.get('asset_knowledge', {})
     site_context_section = ""
     if isinstance(asset_knowledge, dict) and str(asset_knowledge.get('description') or '').strip():
         context_description = escape(str(asset_knowledge['description']).strip())
         context_reviewer = escape(str(asset_knowledge.get('reviewer') or 'human-reviewed'))
         context_revision = escape(str(asset_knowledge.get('profile_revision') or '')[:12])
+        context_source = escape(str(asset_knowledge.get('analysis_source') or 'confirmed profile').replace('_', ' '))
+        risk_context = asset_knowledge.get('risk_context')
+        risk_context_html = ''
+        if isinstance(risk_context, dict):
+            labels = {
+                'asset_criticality': 'Asset criticality',
+                'environment': 'Environment',
+                'sensitive_data': 'Sensitive data',
+                'requires_auth': 'Authentication required',
+            }
+            rendered_items = []
+            for key, label in labels.items():
+                value = risk_context.get(key)
+                if value is None or str(value).strip().lower() == 'unknown':
+                    continue
+                display = value
+                if isinstance(value, bool):
+                    display = 'Yes' if value else 'No'
+                rendered_items.append(
+                    f'<div><strong>{escape(label)}:</strong> {escape(str(display).replace("_", " ").title())}</div>'
+                )
+            if rendered_items:
+                risk_context_html = (
+                    '<div class="confirmed-risk-context">'
+                    '<strong>Confirmed scoring context</strong>'
+                    '<div class="risk-metrics">' + ''.join(rendered_items) + '</div>'
+                    '</div>'
+                )
         site_context_section = f"""
         <section class="section">
             <div class="section-header">
@@ -863,9 +1026,11 @@ def generate_modern_html_report(results: Dict[str, Any]) -> str:
             <p class="section-description">{context_description}</p>
             <div class="risk-metrics">
                 <div><strong>Source:</strong> Per-site Google OKF profile</div>
+                <div><strong>Analysis:</strong> {context_source}</div>
                 <div><strong>Reviewed by:</strong> {context_reviewer}</div>
                 {f'<div><strong>Revision:</strong> {context_revision}</div>' if context_revision else ''}
             </div>
+            {risk_context_html}
         </section>
         """
 
@@ -1102,6 +1267,7 @@ def generate_modern_html_report(results: Dict[str, Any]) -> str:
         merge_summary_html, source_evidence_html = _render_source_evidence(finding)
         render_scanner_native_top_level = not bool(source_evidence_html)
         correlation_html = _render_correlation(finding)
+        ai_advisory_html = _render_ai_advisory(finding)
         finding_scanners = _collect_finding_scanners(finding)
         scanner_provenance = ", ".join(finding_scanners) if finding_scanners else "unknown"
 
@@ -1189,6 +1355,7 @@ def generate_modern_html_report(results: Dict[str, Any]) -> str:
                 {f'<div class="finding-impact"><strong>Impact:</strong><p>{impact}</p></div>' if render_scanner_native_top_level and impact else ''}
                 {f'<div class="finding-remediation"><strong>Remediation:</strong><p>{remediation}</p></div>' if render_scanner_native_top_level and remediation else ''}
                 {correlation_html}
+                {ai_advisory_html}
                 {merge_summary_html}
                 {source_evidence_html}
             </div>
@@ -1646,6 +1813,34 @@ def generate_modern_html_report(results: Dict[str, Any]) -> str:
 
         .summary-grid {{
             grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
+        }}
+
+        .ai-run-grid {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(135px, 1fr));
+            gap: 0.75rem;
+        }}
+
+        .ai-run-metric {{
+            padding: 0.875rem;
+            border: 1px solid var(--border);
+            border-radius: 0.625rem;
+            background: var(--bg-tertiary);
+            display: flex;
+            flex-direction: column;
+            gap: 0.35rem;
+        }}
+
+        .ai-run-metric-label {{
+            color: var(--text-muted);
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+        }}
+
+        .ai-run-metric-value {{
+            color: var(--text-primary);
+            font-weight: 700;
         }}
 
         .priority-grid {{
@@ -2250,6 +2445,80 @@ def generate_modern_html_report(results: Dict[str, Any]) -> str:
             display: block;
             margin-bottom: 0.375rem;
             font-weight: 600;
+        }}
+
+        .ai-advisory {{
+            margin: 1rem 0;
+            padding: 1rem;
+            border: 1px solid rgba(59, 130, 246, 0.35);
+            border-left: 3px solid #3b82f6;
+            border-radius: 0.625rem;
+            background: rgba(59, 130, 246, 0.07);
+        }}
+
+        .ai-advisory-review {{
+            border-color: rgba(245, 158, 11, 0.45);
+            border-left-color: #f59e0b;
+            background: rgba(245, 158, 11, 0.08);
+        }}
+
+        .ai-advisory-unavailable,
+        .ai-advisory-skipped {{
+            border-color: var(--border);
+            border-left-color: var(--text-muted);
+            background: var(--bg-tertiary);
+        }}
+
+        .ai-advisory-header {{
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 0.75rem;
+            flex-wrap: wrap;
+        }}
+
+        .ai-advisory-title {{
+            color: var(--text-primary);
+            font-weight: 700;
+        }}
+
+        .ai-advisory-badges {{
+            display: flex;
+            gap: 0.4rem;
+            flex-wrap: wrap;
+        }}
+
+        .ai-applicability-badge,
+        .ai-confidence-badge,
+        .ai-cache-badge {{
+            background: var(--bg-tertiary);
+            color: var(--text-primary);
+            border: 1px solid var(--border);
+        }}
+
+        .ai-advisory-reason,
+        .ai-guidance,
+        .ai-evidence-ids {{
+            margin-top: 0.75rem;
+            color: var(--text-secondary);
+        }}
+
+        .ai-guidance ul {{
+            margin: 0.4rem 0 0 1.25rem;
+        }}
+
+        .ai-advisory-limit {{
+            margin-top: 0.875rem;
+            color: var(--text-muted);
+            font-size: 0.8rem;
+        }}
+
+        .confirmed-risk-context {{
+            margin-top: 1rem;
+            padding: 0.875rem;
+            border-radius: 0.625rem;
+            border: 1px solid var(--border);
+            background: var(--bg-tertiary);
         }}
 
         .merge-summary {{
@@ -2954,6 +3223,8 @@ def generate_modern_html_report(results: Dict[str, Any]) -> str:
         </section>
 
         {site_context_section}
+
+        {ai_analysis_summary_section}
 
         {f'''
         <section class="section">

@@ -4,6 +4,7 @@ Unified vulnerability knowledge and comparison storage.
 This module provides a lightweight YAML-backed store for JSON-compatible records:
 - scanner vulnerability metadata synced into one common schema
 - LLM duplicate-comparison cache and trace records
+- structured per-finding LLM advisory-analysis cache records
 """
 
 from __future__ import annotations
@@ -129,6 +130,7 @@ class UnifiedVulnerabilityDatabase:
             "vulnerability_knowledge": [],
             "knowledge_sync_runs": [],
             "llm_duplicate_comparisons": [],
+            "llm_finding_analyses": [],
         }
 
     def _normalize_store(self, payload: Any) -> Dict[str, Any]:
@@ -138,7 +140,12 @@ class UnifiedVulnerabilityDatabase:
             version = payload.get("version")
             if isinstance(version, int) and version > 0:
                 normalized["version"] = version
-            for key in ("vulnerability_knowledge", "knowledge_sync_runs", "llm_duplicate_comparisons"):
+            for key in (
+                "vulnerability_knowledge",
+                "knowledge_sync_runs",
+                "llm_duplicate_comparisons",
+                "llm_finding_analyses",
+            ):
                 value = payload.get(key)
                 if isinstance(value, list):
                     normalized[key] = [copy.deepcopy(item) for item in value if isinstance(item, dict)]
@@ -149,6 +156,10 @@ class UnifiedVulnerabilityDatabase:
         )
         normalized["llm_duplicate_comparisons"] = _sorted_copy(
             normalized["llm_duplicate_comparisons"],
+            keys=["cache_key"],
+        )
+        normalized["llm_finding_analyses"] = _sorted_copy(
+            normalized["llm_finding_analyses"],
             keys=["cache_key"],
         )
         return normalized
@@ -326,3 +337,37 @@ class UnifiedVulnerabilityDatabase:
         for row in results:
             row["same_target"] = bool(row.get("same_target"))
         return results
+
+    def get_llm_finding_analysis(self, cache_key: str) -> Optional[Dict[str, Any]]:
+        """Return one cached structured finding-analysis record when present."""
+        wanted = str(cache_key)
+        for record in self._read_store()["llm_finding_analyses"]:
+            if str(record.get("cache_key") or "") == wanted:
+                return copy.deepcopy(record)
+        return None
+
+    def save_llm_finding_analysis(self, record: Dict[str, Any]) -> Dict[str, Any]:
+        """Insert or update a structured finding-analysis cache record."""
+        now = utcnow_iso()
+        store = self._read_store()
+        analyses = store["llm_finding_analyses"]
+        payload = copy.deepcopy(record)
+        payload["created_at"] = payload.get("created_at") or now
+        payload["updated_at"] = now
+
+        cache_key = str(payload.get("cache_key") or "")
+        for idx, existing in enumerate(analyses):
+            if str(existing.get("cache_key") or "") != cache_key:
+                continue
+            payload["created_at"] = existing.get("created_at") or payload["created_at"]
+            analyses[idx] = payload
+            self._write_store(store)
+            return copy.deepcopy(payload)
+
+        analyses.append(payload)
+        self._write_store(store)
+        return copy.deepcopy(payload)
+
+    def list_llm_finding_analyses(self) -> List[Dict[str, Any]]:
+        """Return all stored structured finding-analysis rows for tests/debugging."""
+        return _sorted_copy(self._read_store()["llm_finding_analyses"], keys=["cache_key"])

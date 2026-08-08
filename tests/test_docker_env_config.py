@@ -14,6 +14,8 @@ def test_docker_compose_forwards_supported_llm_env_vars():
     assert environment["VULN_MANAGER_LLM_API_KEY"] == "${VULN_MANAGER_LLM_API_KEY:-}"
     assert environment["VULN_MANAGER_LLM_API_URL"] == "${VULN_MANAGER_LLM_API_URL:-}"
     assert environment["VULN_MANAGER_LLM_MODEL"] == "${VULN_MANAGER_LLM_MODEL:-}"
+    assert environment["VULN_MANAGER_LLM_INPUT_COST_PER_1M"] == "${VULN_MANAGER_LLM_INPUT_COST_PER_1M:-}"
+    assert environment["VULN_MANAGER_LLM_OUTPUT_COST_PER_1M"] == "${VULN_MANAGER_LLM_OUTPUT_COST_PER_1M:-}"
     assert "GROQ_API_KEY" not in environment
     assert "GEMINI_API_KEY" not in environment
 

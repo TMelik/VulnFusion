@@ -55,6 +55,11 @@ scanners:
     enabled: false
 
   zap:
-    # `--zap-report path/to/traditional.json` enables this source as an
-    # offline import and does not start a second ZAP scan.
+    # Keep ZAP disabled by default. Use exactly one explicit route:
+    # - `--with-zap` for the conservative passive template below; or
+    # - `--zap-report path/to/traditional.json` for an offline import that
+    #   does not start a second ZAP scan.
     enabled: false
+    options:
+      timeout: 120
+      af_plan_path: polite_zap_template.yaml

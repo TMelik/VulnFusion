@@ -46,13 +46,22 @@ from utils.llm_duplicate_resolver import (
     LLMDuplicateResolver,
     resolve_llm_duplicate_provider_settings,
 )
+from utils.llm_finding_analyzer import (
+    LLM_FINDING_ANALYSIS_PROMPT_VERSION,
+    LLMFindingAnalysisConfig,
+    LLMFindingAnalyzer,
+)
 from utils.unified_vuln_db import UnifiedVulnerabilityDatabase
 from utils.http_transport_adapters import (
     HTTP2_ADAPTER_MODE_AUTO,
     HTTP2_ADAPTER_MODE_BRIDGE,
 )
 from utils.asset_context import apply_asset_context, load_asset_context_file
-from utils.site_context import discover_site_context, write_site_okf_bundle
+from utils.site_context import (
+    discover_site_context,
+    load_site_okf_bundle,
+    write_site_okf_bundle,
+)
 from utils.config_loader import DefectDojoFileConfig, load_defectdojo_config
 from utils.risk_scorer import score_vulnerabilities
 from utils.run_folder import create_target_slug, get_scan_results_json_path, update_latest_pointer
@@ -61,6 +70,8 @@ from utils.timing import missing_scanner_stages, print_timing_summary, save_timi
 
 WEB_SCANNERS = {'nuclei', 'wapiti', 'nikto', 'zap'}
 RUNTIME_RISK_FIELDS = {'risk_score', 'priority', 'risk_factors', 'risk_rationale'}
+_SITE_CONTEXT_CRITICALITIES = {'high', 'medium', 'low'}
+_SITE_CONTEXT_ENVIRONMENTS = {'production', 'staging', 'development', 'test'}
 
 def print_banner():
     """Print application banner."""
@@ -96,6 +107,19 @@ def print_summary(results: dict):
             print(f"  {indicator} {sev.upper()}: {count}")
 
     print(f"\nTotal Findings: {summary.get('total_findings', 0)}")
+
+    ai_summary = results.get('ai_analysis_summary')
+    if isinstance(ai_summary, dict):
+        print("\nAdvisory AI Analysis:")
+        print(f"  Status: {ai_summary.get('status', 'unknown')}")
+        print(
+            "  Findings: "
+            f"analyzed={ai_summary.get('analyzed_count', 0)}, "
+            f"cached={ai_summary.get('cached_count', 0)}, "
+            f"needs_review={ai_summary.get('needs_review_count', 0)}, "
+            f"unavailable={ai_summary.get('unavailable_count', 0)}, "
+            f"skipped_limit={ai_summary.get('skipped_limit_count', 0)}"
+        )
 
     errors = results.get('errors', [])
     if errors:
@@ -328,6 +352,55 @@ def _build_duplicate_config(args: argparse.Namespace) -> LLMDuplicateConfig:
     )
 
 
+def _build_finding_analysis_config(
+    args: argparse.Namespace,
+    duplicate_config: LLMDuplicateConfig,
+) -> LLMFindingAnalysisConfig:
+    """Build the bounded advisory-analysis config from shared provider settings."""
+    return LLMFindingAnalysisConfig.from_duplicate_config(
+        duplicate_config,
+        enabled=not bool(args.no_ai_analysis),
+        limit=int(args.ai_analysis_limit),
+        input_cost_per_million=_env_float('VULN_MANAGER_LLM_INPUT_COST_PER_1M'),
+        output_cost_per_million=_env_float('VULN_MANAGER_LLM_OUTPUT_COST_PER_1M'),
+    )
+
+
+def _clear_partial_ai_analysis(results: dict) -> None:
+    """Remove partial advisory fields after an unexpected analyzer-level failure."""
+    findings = results.get('all_findings') if isinstance(results, dict) else None
+    if not isinstance(findings, list):
+        return
+    for finding in findings:
+        if not isinstance(finding, dict):
+            continue
+        finding.pop('ai_analysis_status', None)
+        finding.pop('applicability', None)
+        finding.pop('ai_remediation', None)
+
+
+def _unexpected_ai_analysis_summary(config: LLMFindingAnalysisConfig) -> dict:
+    """Return a safe aggregate diagnostic for an unexpected analyzer failure."""
+    return {
+        'status': 'unavailable',
+        'model': str(config.model_name or ''),
+        'prompt_version': LLM_FINDING_ANALYSIS_PROMPT_VERSION,
+        'limit': config.limit,
+        'selected_count': 0,
+        'analyzed_count': 0,
+        'cached_count': 0,
+        'unavailable_count': 0,
+        'skipped_limit_count': 0,
+        'needs_review_count': 0,
+        'redaction_count': 0,
+        'prompt_tokens': 0,
+        'completion_tokens': 0,
+        'total_tokens': 0,
+        'latency_ms': 0.0,
+        'estimated_cost_usd': None,
+    }
+
+
 def _finding_collections_for_enrichment(results: dict) -> list[list[dict]]:
     """Return current-scan finding collections that should share enrichment updates."""
     collections: list[list[dict]] = []
@@ -371,21 +444,59 @@ def _print_site_context_preview(draft: dict, *, stream=None) -> None:
         analysis = {}
     print("\n[*] Suggested site context:", file=stream)
     print(f"    Description: {analysis.get('site_description') or 'Unknown'}", file=stream)
+    analysis_source = str(analysis.get('analysis_source') or 'unknown').replace('_', ' ')
+    model_name = str(analysis.get('analysis_model') or analysis.get('model') or '').strip()
+    source_detail = f" ({model_name})" if model_name else ""
+    print(f"    Analysis source: {analysis_source}{source_detail}", file=stream)
     processes = analysis.get("business_processes")
     if isinstance(processes, list) and processes:
         print("    Business processes:", file=stream)
         for process in processes:
             print(f"      - {process}", file=stream)
+    risk_context = analysis.get("risk_context")
+    if isinstance(risk_context, dict):
+        print("    Proposed risk context (applied only after confirmation):", file=stream)
+        for key in ("asset_criticality", "environment", "sensitive_data", "requires_auth"):
+            value = risk_context.get(key)
+            print(f"      - {key.replace('_', ' ')}: {value if value is not None else 'unknown'}", file=stream)
+        confidence = risk_context.get('confidence')
+        if isinstance(confidence, (int, float)) and not isinstance(confidence, bool):
+            print(f"      - model-stated confidence: {float(confidence):.2f}", file=stream)
+        evidence_ids = risk_context.get('evidence_ids')
+        if isinstance(evidence_ids, list) and evidence_ids:
+            print(
+                "      - cited evidence: "
+                + ", ".join(str(item) for item in evidence_ids if str(item).strip()),
+                file=stream,
+            )
+        reason = str(risk_context.get('reason') or '').strip()
+        if reason:
+            print(f"      - reason: {reason}", file=stream)
+    uncertainties = analysis.get('uncertainties')
+    if isinstance(uncertainties, list) and uncertainties:
+        print("    Uncertainties:", file=stream)
+        for uncertainty in uncertainties[:5]:
+            if isinstance(uncertainty, str) and uncertainty.strip():
+                print(f"      - {uncertainty.strip()}", file=stream)
     pages = draft.get("pages") if isinstance(draft, dict) else []
     if isinstance(pages, list) and pages:
         print("    Sources:", file=stream)
         for page in pages:
             if isinstance(page, dict):
                 print(f"      - {page.get('url')}", file=stream)
+    osint_sources = draft.get('osint') if isinstance(draft, dict) else []
+    if isinstance(osint_sources, list) and osint_sources:
+        print("    Local metadata:", file=stream)
+        for source in osint_sources:
+            if not isinstance(source, dict):
+                continue
+            kind = str(source.get('kind') or 'metadata').upper()
+            resource = str(source.get('resource') or '').strip()
+            print(f"      - {kind}: {resource}", file=stream)
 
 
 def _review_site_context_description(args: argparse.Namespace, draft: dict) -> str | None:
-    """Return a confirmed/edited description, or None when context is skipped."""
+    """Confirm the displayed profile and return its final description, or skip it."""
     analysis = draft.get("analysis") if isinstance(draft, dict) else {}
     if not isinstance(analysis, dict):
         analysis = {}
@@ -404,11 +515,47 @@ def _review_site_context_description(args: argparse.Namespace, draft: dict) -> s
         return None
 
     answer = input(
-        "Accept description [Enter], type a replacement, or type 'skip': "
+        "Accept the description and proposed risk context [Enter], "
+        "type a replacement description, or type 'skip': "
     ).strip()
     if answer.lower() in {"skip", "s"}:
         return None
     return answer or suggestion or None
+
+
+def _site_context_scoring_context(results: dict, asset_knowledge: dict | None) -> dict:
+    """Return risk-scoring inputs augmented only by human-confirmed site context."""
+    scoring_context = dict(results)
+    if not isinstance(asset_knowledge, dict):
+        return scoring_context
+    risk_context = asset_knowledge.get('risk_context')
+    if not isinstance(risk_context, dict):
+        return scoring_context
+
+    criticality = risk_context.get('asset_criticality')
+    if criticality in _SITE_CONTEXT_CRITICALITIES:
+        scoring_context['asset_criticality'] = criticality
+    environment = risk_context.get('environment')
+    if environment in _SITE_CONTEXT_ENVIRONMENTS:
+        scoring_context['environment'] = environment
+    for key in ('sensitive_data', 'requires_auth'):
+        value = risk_context.get(key)
+        if isinstance(value, bool):
+            scoring_context[key] = value
+    return scoring_context
+
+
+def _public_asset_knowledge_reference(asset_knowledge: dict) -> dict:
+    """Drop local OKF filesystem paths before a profile reference enters results."""
+    public = {
+        key: asset_knowledge[key]
+        for key in (
+            'description', 'reviewer', 'profile_revision', 'analysis_source',
+            'business_processes', 'risk_context',
+        )
+        if key in asset_knowledge
+    }
+    return public
 
 
 def _strip_runtime_risk_fields(results: dict) -> dict:
@@ -446,6 +593,16 @@ def _save_raw_only_results(orchestrator, results: dict, output: str | None, data
         update_latest_pointer(orchestrator.current_run_folder)
 
     print(f"[+] Raw results saved to: {output_path}")
+    return output_path
+
+
+def _save_ai_analysis_metrics(run_folder: Path | None, summary: dict | None) -> Path | None:
+    """Persist the sanitized advisory-AI run diagnostics beside scan artifacts."""
+    if run_folder is None or not isinstance(summary, dict):
+        return None
+    output_path = Path(run_folder) / 'ai_analysis_metrics.json'
+    with output_path.open('w', encoding='utf-8') as fh:
+        json.dump(summary, fh, indent=2, default=str)
     return output_path
 
 
@@ -1438,26 +1595,26 @@ def main():
         parser.add_argument(
             '--llm-api-url',
             type=str,
-            help='OpenAI-compatible chat completions endpoint used for cross-scanner duplicate decisions'
+            help='OpenAI-compatible chat completions endpoint used for duplicate decisions and advisory finding analysis'
         )
 
         parser.add_argument(
             '--llm-api-key',
             type=str,
-            help='API key for the configured LLM duplicate endpoint'
+            help='API key for the configured LLM endpoint'
         )
 
         parser.add_argument(
             '--llm-model',
             type=str,
-            help='Model name sent to the configured LLM duplicate endpoint'
+            help='Model name used for structured duplicate and advisory finding decisions'
         )
 
         parser.add_argument(
             '--llm-timeout',
             type=float,
             metavar='SECONDS',
-            help='Timeout in seconds for one LLM duplicate comparison request (default: 15 or VULN_MANAGER_LLM_TIMEOUT)'
+            help='Timeout in seconds for one LLM provider request (default: 15 or VULN_MANAGER_LLM_TIMEOUT)'
         )
 
         parser.add_argument(
@@ -1469,13 +1626,13 @@ def main():
         parser.add_argument(
             '--no-llm-cache',
             action='store_true',
-            help='Disable reuse of cached LLM duplicate decisions'
+            help='Disable reuse of cached LLM duplicate and advisory finding decisions'
         )
 
         parser.add_argument(
             '--knowledge-db',
             type=str,
-            help='Path to the YAML store used for LLM duplicate-resolution cache data (default: <data-dir>/unified_vulnerabilities.yaml or VULN_MANAGER_KNOWLEDGE_DB)'
+            help='Path to the YAML store used for LLM decision caches (default: <data-dir>/unified_vulnerabilities.yaml or VULN_MANAGER_KNOWLEDGE_DB)'
         )
 
         parser.add_argument(
@@ -1513,6 +1670,26 @@ def main():
         )
 
         parser.add_argument(
+            '--no-context-reuse',
+            action='store_true',
+            help='Do not automatically reuse a non-stale human-confirmed site context profile'
+        )
+
+        parser.add_argument(
+            '--no-ai-analysis',
+            action='store_true',
+            help='Disable automatic advisory LLM applicability and remediation analysis'
+        )
+
+        parser.add_argument(
+            '--ai-analysis-limit',
+            type=int,
+            default=10,
+            metavar='COUNT',
+            help='Maximum highest-priority findings analyzed by the advisory LLM stage (default: 10)'
+        )
+
+        parser.add_argument(
             '--zap-timeout',
             type=int,
             default=1200,
@@ -1524,6 +1701,12 @@ def main():
             '--zap-active-scan',
             action='store_true',
             help='Add a ZAP Automation Framework activeScan job before reporting when the resolved template does not already include one'
+        )
+
+        parser.add_argument(
+            '--with-zap',
+            action='store_true',
+            help='With --scanner all, enable the conservative built-in passive ZAP plan; add --zap-active-scan only when an active scan is authorized'
         )
 
         parser.add_argument(
@@ -1670,6 +1853,8 @@ def main():
         args = parser.parse_args()
         if (args.context_accept or args.context_description) and not args.discover_context:
             parser.error("--context-accept/--context-description require --discover-context")
+        if args.ai_analysis_limit < 1:
+            parser.error("--ai-analysis-limit must be at least 1")
         if args.defectdojo_upload and args.no_defectdojo_upload:
             parser.error("--defectdojo-upload and --no-defectdojo-upload cannot be used together")
         if args.defectdojo_auto_create_context and args.defectdojo_no_auto_create_context:
@@ -1695,6 +1880,14 @@ def main():
                 parser.error(str(exc))
         if args.zap_use_proxy and not args.zap_proxy_url:
             parser.error("--zap-use-proxy requires --zap-proxy-url")
+        if args.with_zap and args.scanner != 'all':
+            parser.error("--with-zap requires --scanner all")
+        if args.with_zap and args.zap_report:
+            parser.error("--with-zap cannot be combined with --zap-report")
+        if args.with_zap and args.zap_af_plan:
+            parser.error(
+                "--with-zap uses the conservative built-in ZAP plan and cannot be combined with --zap-af-plan"
+            )
         if args.zap_report and args.scanner not in {'all', 'zap'}:
             parser.error("--zap-report requires --scanner all or --scanner zap")
         if args.zap_report and (
@@ -1886,17 +2079,18 @@ def main():
             return 0
 
         confirmed_asset_knowledge = None
+        context_target = (
+            target_probe.get("normalized_target")
+            if isinstance(target_probe, dict) and target_probe.get("normalized_target")
+            else args.target
+        )
+        context_stream = sys.stderr if args.json else sys.stdout
         if args.discover_context:
             provider_settings = resolve_llm_duplicate_provider_settings(
                 cli_api_url=args.llm_api_url,
                 cli_api_key=args.llm_api_key,
                 cli_model_name=args.llm_model,
                 env=os.environ,
-            )
-            context_target = (
-                target_probe.get("normalized_target")
-                if isinstance(target_probe, dict) and target_probe.get("normalized_target")
-                else args.target
             )
             context_timeout = float(args.llm_timeout if args.llm_timeout is not None else 8.0)
             try:
@@ -1907,8 +2101,7 @@ def main():
                     model_name=provider_settings["model_name"],
                     timeout_seconds=context_timeout,
                 )
-                preview_stream = sys.stderr if args.json else sys.stdout
-                _print_site_context_preview(context_draft, stream=preview_stream)
+                _print_site_context_preview(context_draft, stream=context_stream)
                 confirmed_description = _review_site_context_description(args, context_draft)
                 if confirmed_description:
                     confirmed_asset_knowledge = write_site_okf_bundle(
@@ -1919,14 +2112,34 @@ def main():
                     )
                     print(
                         f"[+] Confirmed site OKF: {confirmed_asset_knowledge['profile_path']}",
-                        file=preview_stream,
+                        file=context_stream,
                     )
                 else:
-                    print("[*] Continuing without confirmed site context.", file=preview_stream)
+                    print("[*] Continuing without confirmed site context.", file=context_stream)
             except Exception as exc:
                 print(
                     f"[!] Site context discovery failed; continuing without it: {exc}",
                     file=sys.stderr,
+                )
+        elif not args.no_context_reuse:
+            try:
+                existing_context = load_site_okf_bundle(data_dir, str(context_target))
+            except Exception as exc:
+                logging.debug("Site context reuse skipped: %s", exc)
+                existing_context = None
+            if existing_context is not None and existing_context.get('stale'):
+                print(
+                    "[!] Confirmed site context is stale and will not affect this run. "
+                    "Use --discover-context to refresh it.",
+                    file=sys.stderr,
+                )
+            elif existing_context is not None:
+                confirmed_asset_knowledge = existing_context
+                print(
+                    "[*] Reusing confirmed site context: "
+                    f"{existing_context.get('profile_path')} "
+                    f"(revision {str(existing_context.get('profile_revision') or '')[:12]})",
+                    file=context_stream,
                 )
 
         options = resolved_scan_config.scanner_options
@@ -2026,7 +2239,9 @@ def main():
         if target_probe and 'transport_detected' not in results:
             results['transport_detected'] = target_probe
         if confirmed_asset_knowledge:
-            results['asset_knowledge'] = confirmed_asset_knowledge
+            results['asset_knowledge'] = _public_asset_knowledge_reference(
+                confirmed_asset_knowledge
+            )
 
         _record_missing_scanner_timing(workflow_timer, resolved_scan_config.active_scanners)
         if normalize_output:
@@ -2051,6 +2266,10 @@ def main():
             validation_error = duplicate_config.validation_error()
             if validation_error:
                 parser.error(validation_error)
+            try:
+                finding_analysis_config = _build_finding_analysis_config(args, duplicate_config)
+            except ValueError as exc:
+                parser.error(str(exc))
             if args.merge_by_host and not args.json:
                 print("[*] --merge-by-host is ignored because the active pipeline no longer uses the legacy host-only dedupe path.")
 
@@ -2164,10 +2383,82 @@ def main():
                 results = _apply_asset_context_to_results(results, asset_context_rules)
 
             if risk_scoring_enabled:
-                results = score_vulnerabilities(results, context=results)
+                results = score_vulnerabilities(
+                    results,
+                    context=_site_context_scoring_context(results, confirmed_asset_knowledge),
+                )
             else:
                 results = _strip_runtime_risk_fields(results)
+
+            finding_analysis_timing = workflow_timer.start(
+                'finding_analysis',
+                note=(
+                    f"model={finding_analysis_config.model_name or 'not-configured'}; "
+                    f"limit={finding_analysis_config.limit}"
+                ),
+            ) if workflow_timer is not None else None
+            try:
+                results = LLMFindingAnalyzer(
+                    finding_analysis_config,
+                    database=knowledge_db,
+                ).apply(
+                    results,
+                    asset_knowledge=confirmed_asset_knowledge,
+                )
+            except Exception as exc:
+                _clear_partial_ai_analysis(results)
+                results['ai_analysis_summary'] = _unexpected_ai_analysis_summary(
+                    finding_analysis_config
+                )
+                logging.exception("Unexpected advisory AI analysis failure")
+                _finish_timing_stage(
+                    workflow_timer,
+                    finding_analysis_timing,
+                    status='failed',
+                    note=f"advisory analyzer failed open: {type(exc).__name__}",
+                )
+            else:
+                ai_summary = results.get('ai_analysis_summary')
+                if not isinstance(ai_summary, dict):
+                    ai_summary = {}
+                _finish_timing_stage(
+                    workflow_timer,
+                    finding_analysis_timing,
+                    status='success',
+                    note=(
+                        f"status={ai_summary.get('status', 'unknown')}; "
+                        f"analyzed={ai_summary.get('analyzed_count', 0)}; "
+                        f"cached={ai_summary.get('cached_count', 0)}; "
+                        f"unavailable={ai_summary.get('unavailable_count', 0)}"
+                    ),
+                )
+
+            ai_summary = results.get('ai_analysis_summary')
+            if isinstance(ai_summary, dict):
+                ai_log_stream = sys.stderr if args.json else sys.stdout
+                ai_status = ai_summary.get('status')
+                if ai_status == 'disabled_not_configured':
+                    print(
+                        "[*] AI finding analysis disabled: LLM provider is not configured.",
+                        file=ai_log_stream,
+                    )
+                elif ai_status == 'disabled_by_user':
+                    print("[*] AI finding analysis disabled by --no-ai-analysis.", file=ai_log_stream)
+                else:
+                    print(
+                        "[*] AI finding analysis: "
+                        f"status={ai_status}, analyzed={ai_summary.get('analyzed_count', 0)}, "
+                        f"cached={ai_summary.get('cached_count', 0)}, "
+                        f"unavailable={ai_summary.get('unavailable_count', 0)}.",
+                        file=ai_log_stream,
+                    )
             results = sanitize_results_for_export(results)
+            ai_metrics_path = _save_ai_analysis_metrics(
+                getattr(orchestrator, 'current_run_folder', None),
+                results.get('ai_analysis_summary'),
+            )
+            if ai_metrics_path is not None and not args.json:
+                print(f"[+] AI analysis metrics saved to: {ai_metrics_path}")
 
             # Stamp final metadata, validate, then persist.
             # main.py owns this responsibility; save_results() does not auto-fill.
@@ -2186,6 +2477,11 @@ def main():
                 workflow_timer,
                 'deduplication',
                 'deduplication skipped because normalization is disabled',
+            )
+            _ensure_skipped_timing_stage(
+                workflow_timer,
+                'finding_analysis',
+                'advisory AI analysis skipped because normalization is disabled',
             )
             _ensure_skipped_timing_stage(
                 workflow_timer,

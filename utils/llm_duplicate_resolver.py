@@ -1845,6 +1845,23 @@ class OpenAICompatibleLLMClient:
 
         raise RuntimeError("unreachable")
 
+    def chat_completion(
+        self,
+        request_body: Dict[str, Any],
+        *,
+        request_kind: str,
+    ) -> Tuple[Any, str, str, int, List[float]]:
+        """Send a validated generic chat-completion request.
+
+        Duplicate resolution remains this client's primary consumer, while
+        other structured advisory features can reuse the same hardened HTTP,
+        secret-redaction, error-classification, and retry boundary.
+        """
+        validation_error = self.config.validation_error()
+        if validation_error:
+            raise ValueError(validation_error)
+        return self._post_chat_completion(request_body, request_kind=request_kind)
+
     def healthcheck(self) -> Dict[str, Any]:
         """Validate that the configured provider can answer a tiny yes/no request."""
         validation_error = self.config.validation_error()

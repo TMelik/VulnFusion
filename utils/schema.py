@@ -11,6 +11,14 @@ SEVERITY_LEVELS = ['critical', 'high', 'medium', 'low', 'info']
 
 PRIORITY_LEVELS = ['P0', 'P1', 'P2', 'P3', 'P4']
 
+AI_ANALYSIS_STATUSES = ['completed', 'cached', 'unavailable', 'skipped_limit']
+APPLICABILITY_STATUSES = [
+    'likely_false_positive',
+    'valid_but_not_applicable',
+    'likely_valid',
+    'needs_review',
+]
+
 # Valid match_level values produced by deduplicator._merge_group()
 _MATCH_LEVELS = {'strict', 'general', 'host_only', 'single'}
 
@@ -78,6 +86,11 @@ class VulnerabilitySchema:
         - priority: str - Priority bucket derived from risk_score
         - risk_factors: dict - Structured scoring inputs/adjustments
         - risk_rationale: str - Concise explanation of the prioritization
+
+    Public advisory AI fields preserved in exported findings when present:
+        - ai_analysis_status: str - completed/cached/unavailable/skipped_limit
+        - applicability: dict - Strict evidence-backed applicability assessment
+        - ai_remediation: dict - Advisory remediation and verification steps
 
     Internal transient fields used for normalization, duplicate resolution,
     comparison matching, or scoring may still be tolerated by validators before
@@ -285,6 +298,36 @@ class VulnerabilitySchema:
                 "risk_rationale": {
                     "type": "string",
                     "description": "Concise explanation of why the finding was prioritized"
+                },
+                "ai_analysis_status": {
+                    "type": "string",
+                    "enum": AI_ANALYSIS_STATUSES,
+                    "description": "State of the optional advisory LLM finding analysis"
+                },
+                "applicability": {
+                    "type": "object",
+                    "required": ["status", "confidence", "reason", "evidence_ids"],
+                    "additionalProperties": False,
+                    "properties": {
+                        "status": {"type": "string", "enum": APPLICABILITY_STATUSES},
+                        "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+                        "reason": {"type": "string"},
+                        "evidence_ids": {
+                            "type": "array",
+                            "items": {"type": "string"}
+                        }
+                    },
+                    "description": "Advisory evidence-backed applicability assessment"
+                },
+                "ai_remediation": {
+                    "type": "object",
+                    "required": ["steps", "verification"],
+                    "additionalProperties": False,
+                    "properties": {
+                        "steps": {"type": "array", "items": {"type": "string"}},
+                        "verification": {"type": "array", "items": {"type": "string"}}
+                    },
+                    "description": "Advisory remediation and verification guidance"
                 },
                 "references": {
                     "type": "array",
@@ -516,6 +559,90 @@ def _validate_source_findings(errors: List[str], finding: Dict[str, Any]) -> Non
                 errors.append(f"{prefix}.references must be a list of strings (found non-string element)")
 
 
+def _validate_ai_analysis(errors: List[str], finding: Dict[str, Any]) -> None:
+    """Validate the small public advisory AI contract when present."""
+    status_present = 'ai_analysis_status' in finding
+    applicability_present = 'applicability' in finding
+    remediation_present = 'ai_remediation' in finding
+    if not (status_present or applicability_present or remediation_present):
+        return
+
+    status = finding.get('ai_analysis_status')
+    if not isinstance(status, str) or status not in AI_ANALYSIS_STATUSES:
+        errors.append(
+            "'ai_analysis_status' must be one of: "
+            + ", ".join(AI_ANALYSIS_STATUSES)
+        )
+        return
+
+    if status in {'completed', 'cached'} and not applicability_present:
+        errors.append(f"'applicability' is required when ai_analysis_status={status!r}")
+    if status in {'completed', 'cached'} and not remediation_present:
+        errors.append(f"'ai_remediation' is required when ai_analysis_status={status!r}")
+
+    if applicability_present:
+        applicability = finding.get('applicability')
+        required = {'status', 'confidence', 'reason', 'evidence_ids'}
+        if not isinstance(applicability, dict):
+            errors.append(
+                "'applicability' must be an object, got "
+                f"{type(applicability).__name__}"
+            )
+        else:
+            if set(applicability) != required:
+                errors.append(
+                    "'applicability' must contain exactly: "
+                    + ", ".join(sorted(required))
+                )
+            applicability_status = applicability.get('status')
+            if applicability_status not in APPLICABILITY_STATUSES:
+                errors.append(
+                    "applicability.status must be one of: "
+                    + ", ".join(APPLICABILITY_STATUSES)
+                )
+            confidence = applicability.get('confidence')
+            if (
+                isinstance(confidence, bool)
+                or not isinstance(confidence, (int, float))
+                or not 0.0 <= float(confidence) <= 1.0
+            ):
+                errors.append("applicability.confidence must be a number between 0.0 and 1.0")
+            reason = applicability.get('reason')
+            if not isinstance(reason, str) or not reason.strip():
+                errors.append("applicability.reason must be a non-empty string")
+            evidence_ids = applicability.get('evidence_ids')
+            if not isinstance(evidence_ids, list) or not all(
+                isinstance(item, str) and item.strip() for item in evidence_ids
+            ):
+                errors.append("applicability.evidence_ids must be a list of non-empty strings")
+
+    if remediation_present:
+        remediation = finding.get('ai_remediation')
+        required = {'steps', 'verification'}
+        if not isinstance(remediation, dict):
+            errors.append(
+                "'ai_remediation' must be an object, got "
+                f"{type(remediation).__name__}"
+            )
+        else:
+            if set(remediation) != required:
+                errors.append(
+                    "'ai_remediation' must contain exactly: "
+                    + ", ".join(sorted(required))
+                )
+            for field in ('steps', 'verification'):
+                values = remediation.get(field)
+                if (
+                    not isinstance(values, list)
+                    or not values
+                    or len(values) > 5
+                    or not all(isinstance(item, str) and item.strip() for item in values)
+                ):
+                    errors.append(
+                        f"ai_remediation.{field} must contain 1 to 5 non-empty strings"
+                    )
+
+
 # ---------------------------------------------------------------------------
 # Public validator
 # ---------------------------------------------------------------------------
@@ -584,6 +711,7 @@ def validate_finding(finding: Dict[str, Any]) -> tuple[bool, List[str]]:
     for fp_field in ('fp_strict', 'fp_general', 'fp_host_only'):
         _check_optional_str(errors, finding, fp_field)
     _validate_source_findings(errors, finding)
+    _validate_ai_analysis(errors, finding)
 
     # ------------------------------------------------------------------
     # D. Optional deduplication + scoring / prioritization fields

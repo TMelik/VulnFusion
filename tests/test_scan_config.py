@@ -64,6 +64,7 @@ def test_main_help_lists_scan_config_flag():
     assert "--risk-scoring" in result.stdout
     assert "--no-risk-scoring" in result.stdout
     assert "--no-score" in result.stdout
+    assert "--with-zap" in result.stdout
     assert "--zap-report" in result.stdout
 
 
@@ -568,6 +569,361 @@ def test_zap_report_rejects_live_zap_execution_flags(monkeypatch, tmp_path, caps
     captured = capsys.readouterr()
     assert excinfo.value.code == 2
     assert "cannot be combined with ZAP execution options" in captured.err
+
+
+def test_with_zap_enables_disabled_zap_from_polite_profile(monkeypatch, tmp_path, capsys):
+    config_path = ROOT / "configs" / "examples" / "polite_demo_config.yaml"
+    plan_path = ROOT / "configs" / "examples" / "polite_zap_template.yaml"
+
+    rc, captured = _run_main_with_fake_orchestrator(
+        monkeypatch,
+        tmp_path,
+        [
+            "main.py",
+            "--target", "https://example.com",
+            "--scanner", "all",
+            "--scan-config", str(config_path),
+            "--with-zap",
+            "--data-dir", str(tmp_path / "data"),
+            "--json",
+            "--no-dedupe",
+            "--no-score",
+        ],
+    )
+    capsys.readouterr()
+
+    assert rc == 0
+    assert captured["options"]["zap"] == {
+        "timeout": 120,
+        "af_plan_path": str(plan_path.resolve()),
+        "use_proxy": False,
+    }
+    assert SCAN_CONFIG_ENABLED_KEY not in captured["options"]["zap"]
+
+    effective_path = tmp_path / "run" / "effective_scan_config.json"
+    payload = json.loads(effective_path.read_text(encoding="utf-8"))
+    assert payload["scanners"]["zap"]["enabled"] is True
+    assert payload["scanners"]["zap"]["options"]["timeout"] == 120
+    assert payload["scanners"]["zap"]["options"]["af_plan_path"] == str(plan_path.resolve())
+
+
+def test_with_zap_is_conservative_without_a_scan_config(monkeypatch, tmp_path, capsys):
+    plan_path = ROOT / "configs" / "examples" / "polite_zap_template.yaml"
+
+    rc, captured = _run_main_with_fake_orchestrator(
+        monkeypatch,
+        tmp_path,
+        [
+            "main.py",
+            "--target", "https://example.com",
+            "--scanner", "all",
+            "--with-zap",
+            "--data-dir", str(tmp_path / "data"),
+            "--json",
+            "--no-dedupe",
+            "--no-score",
+        ],
+    )
+    capsys.readouterr()
+
+    assert rc == 0
+    assert captured["options"]["zap"]["timeout"] == 120
+    assert captured["options"]["zap"]["af_plan_path"] == str(plan_path.resolve())
+    assert captured["options"]["zap"]["use_proxy"] is False
+
+    payload = json.loads(
+        (tmp_path / "run" / "effective_scan_config.json").read_text(encoding="utf-8")
+    )
+    assert payload["scanners"]["zap"]["enabled"] is True
+    assert payload["scanners"]["zap"]["options"]["timeout"] == 120
+    assert payload["scanners"]["zap"]["options"]["af_plan_path"] == str(plan_path.resolve())
+
+
+def test_with_zap_does_not_inherit_config_owned_active_plan(monkeypatch, tmp_path, capsys):
+    unsafe_plan = tmp_path / "active-plan.yaml"
+    unsafe_plan.write_text(
+        "env:\n  contexts: []\njobs:\n  - type: activeScan\n    parameters: {}\n",
+        encoding="utf-8",
+    )
+    config_path = tmp_path / "scan-config.yaml"
+    config_path.write_text(
+        "version: 1\nscanners:\n  zap:\n    enabled: false\n    options:\n"
+        "      active_scan: true\n      af_plan_path: active-plan.yaml\n      timeout: 900\n",
+        encoding="utf-8",
+    )
+    polite_plan = ROOT / "configs" / "examples" / "polite_zap_template.yaml"
+
+    rc, captured = _run_main_with_fake_orchestrator(
+        monkeypatch,
+        tmp_path,
+        [
+            "main.py",
+            "--target", "https://example.com",
+            "--scanner", "all",
+            "--scan-config", str(config_path),
+            "--with-zap",
+            "--data-dir", str(tmp_path / "data"),
+            "--json",
+            "--no-dedupe",
+            "--no-score",
+        ],
+    )
+    capsys.readouterr()
+
+    assert rc == 0
+    assert captured["options"]["zap"]["af_plan_path"] == str(polite_plan.resolve())
+    assert captured["options"]["zap"]["timeout"] == 120
+    assert "active_scan" not in captured["options"]["zap"]
+
+
+def test_with_zap_rejects_custom_af_plan(monkeypatch, tmp_path, capsys):
+    custom_plan = tmp_path / "custom.yaml"
+    custom_plan.write_text("env: {}\njobs: []\n", encoding="utf-8")
+
+    with pytest.raises(SystemExit) as excinfo:
+        _run_main_with_fake_orchestrator(
+            monkeypatch,
+            tmp_path,
+            [
+                "main.py",
+                "--target", "https://example.com",
+                "--scanner", "all",
+                "--with-zap",
+                "--zap-af-plan", str(custom_plan),
+            ],
+        )
+
+    captured = capsys.readouterr()
+    assert excinfo.value.code == 2
+    assert "cannot be combined with --zap-af-plan" in captured.err
+
+
+@pytest.mark.parametrize("scanner", ["zap", "nmap", "nuclei"])
+def test_with_zap_requires_scanner_all(monkeypatch, tmp_path, capsys, scanner):
+    with pytest.raises(SystemExit) as excinfo:
+        _run_main_with_fake_orchestrator(
+            monkeypatch,
+            tmp_path,
+            [
+                "main.py",
+                "--target", "https://example.com",
+                "--scanner", scanner,
+                "--with-zap",
+            ],
+        )
+
+    captured = capsys.readouterr()
+    assert excinfo.value.code == 2
+    assert "--with-zap requires --scanner all" in captured.err
+
+
+def test_with_zap_rejects_offline_report(monkeypatch, tmp_path, capsys):
+    report_path = tmp_path / "manual-zap-report.json"
+    report_path.write_text(json.dumps({"site": []}), encoding="utf-8")
+
+    with pytest.raises(SystemExit) as excinfo:
+        _run_main_with_fake_orchestrator(
+            monkeypatch,
+            tmp_path,
+            [
+                "main.py",
+                "--target", "https://example.com",
+                "--scanner", "all",
+                "--with-zap",
+                "--zap-report", str(report_path),
+            ],
+        )
+
+    captured = capsys.readouterr()
+    assert excinfo.value.code == 2
+    assert "--with-zap cannot be combined with --zap-report" in captured.err
+
+
+def test_with_zap_accepts_explicit_active_scan(monkeypatch, tmp_path, capsys):
+    config_path = ROOT / "configs" / "examples" / "polite_demo_config.yaml"
+    plan_path = ROOT / "configs" / "examples" / "polite_zap_template.yaml"
+
+    rc, captured = _run_main_with_fake_orchestrator(
+        monkeypatch,
+        tmp_path,
+        [
+            "main.py",
+            "--target", "https://example.com",
+            "--scanner", "all",
+            "--scan-config", str(config_path),
+            "--with-zap",
+            "--zap-active-scan",
+            "--data-dir", str(tmp_path / "data"),
+            "--json",
+            "--no-dedupe",
+            "--no-score",
+        ],
+    )
+    capsys.readouterr()
+
+    assert rc == 0
+    assert captured["options"]["zap"]["active_scan"] is True
+    assert captured["options"]["zap"]["timeout"] == 120
+    assert captured["options"]["zap"]["af_plan_path"] == str(plan_path.resolve())
+
+
+def test_polite_zap_template_is_bounded_and_passive_by_default():
+    config_path = ROOT / "configs" / "examples" / "polite_demo_config.yaml"
+    plan_path = ROOT / "configs" / "examples" / "polite_zap_template.yaml"
+    profile = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    plan = yaml.safe_load(plan_path.read_text(encoding="utf-8"))
+
+    assert profile["scanners"]["zap"] == {
+        "enabled": False,
+        "options": {
+            "timeout": 120,
+            "af_plan_path": "polite_zap_template.yaml",
+        },
+    }
+
+    jobs = plan["jobs"]
+    job_types = [job["type"] for job in jobs]
+    assert job_types == ["passiveScan-config", "spider", "passiveScan-wait", "report"]
+    assert "activeScan" not in job_types
+    assert "spiderAjax" not in job_types
+
+    spider = next(job for job in jobs if job["type"] == "spider")["parameters"]
+    assert spider["maxDuration"] == 2
+    assert spider["maxDepth"] == 2
+    assert spider["maxChildren"] == 10
+    assert spider["threadCount"] == 1
+    assert spider["postForm"] is False
+    assert spider["processForm"] is False
+    passive_wait = next(job for job in jobs if job["type"] == "passiveScan-wait")["parameters"]
+    assert passive_wait["maxDuration"] == 2
+
+
+def test_main_runs_advisory_ai_after_scoring_and_before_export(
+    monkeypatch, tmp_path, capsys
+):
+    events = []
+    original_sanitizer = main.sanitize_results_for_export
+
+    def fake_score(results, context=None):
+        events.append("score")
+        return results
+
+    class FakeAnalyzer:
+        def __init__(self, config, *, database=None):
+            assert config.enabled is True
+            assert config.model_name == "demo-model"
+            assert config.limit == 3
+
+        def apply(self, results, *, asset_knowledge=None):
+            events.append("ai")
+            results["ai_analysis_summary"] = {
+                "status": "completed",
+                "model": "demo-model",
+                "prompt_version": "finding-analysis-v1",
+                "limit": 3,
+                "selected_count": 0,
+                "analyzed_count": 0,
+                "cached_count": 0,
+                "unavailable_count": 0,
+                "skipped_limit_count": 0,
+                "needs_review_count": 0,
+                "redaction_count": 0,
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+                "latency_ms": 0.0,
+                "estimated_cost_usd": None,
+            }
+            return results
+
+    def tracking_sanitizer(results):
+        events.append("sanitize")
+        return original_sanitizer(results)
+
+    monkeypatch.setenv("VULN_MANAGER_LLM_API_URL", "https://llm.example/v1/chat/completions")
+    monkeypatch.setenv("VULN_MANAGER_LLM_API_KEY", "test-secret")
+    monkeypatch.setenv("VULN_MANAGER_LLM_MODEL", "demo-model")
+    monkeypatch.setattr(main, "score_vulnerabilities", fake_score)
+    monkeypatch.setattr(main, "LLMFindingAnalyzer", FakeAnalyzer)
+    monkeypatch.setattr(main, "sanitize_results_for_export", tracking_sanitizer)
+
+    rc, _ = _run_main_with_fake_orchestrator(
+        monkeypatch,
+        tmp_path,
+        [
+            "main.py",
+            "--target", "example.com",
+            "--scanner", "all",
+            "--data-dir", str(tmp_path / "data"),
+            "--no-dedupe",
+            "--ai-analysis-limit", "3",
+            "--no-report",
+            "--json",
+        ],
+    )
+    capsys.readouterr()
+
+    assert rc == 0
+    assert events == ["score", "ai", "sanitize"]
+    payload = json.loads((tmp_path / "run" / "normalized.json").read_text(encoding="utf-8"))
+    assert payload["ai_analysis_summary"]["model"] == "demo-model"
+    assert (tmp_path / "run" / "ai_analysis_metrics.json").is_file()
+
+
+def test_main_reuses_confirmed_site_risk_context_for_scoring(
+    monkeypatch, tmp_path, capsys
+):
+    captured_context = {}
+    profile = {
+        "description": "Confirmed public account portal.",
+        "reviewer": "demo-user",
+        "profile_revision": "b" * 64,
+        "analysis_source": "llm",
+        "business_processes": ["Account management"],
+        "risk_context": {
+            "asset_criticality": "high",
+            "environment": "production",
+            "sensitive_data": True,
+            "requires_auth": True,
+            "confidence": 0.91,
+            "reason": "Confirmed account and sign-in workflows.",
+            "evidence_ids": ["page-1"],
+        },
+        "profile_path": "/private/runtime/profile.md",
+        "stale": False,
+    }
+
+    def fake_score(results, context=None):
+        captured_context.update(context or {})
+        return results
+
+    monkeypatch.setattr(main, "load_site_okf_bundle", lambda *args, **kwargs: profile)
+    monkeypatch.setattr(main, "score_vulnerabilities", fake_score)
+
+    rc, _ = _run_main_with_fake_orchestrator(
+        monkeypatch,
+        tmp_path,
+        [
+            "main.py",
+            "--target", "example.com",
+            "--scanner", "all",
+            "--data-dir", str(tmp_path / "data"),
+            "--no-dedupe",
+            "--no-ai-analysis",
+            "--no-report",
+            "--json",
+        ],
+    )
+    capsys.readouterr()
+
+    assert rc == 0
+    assert captured_context["asset_criticality"] == "high"
+    assert captured_context["environment"] == "production"
+    assert captured_context["sensitive_data"] is True
+    assert captured_context["requires_auth"] is True
+    payload = json.loads((tmp_path / "run" / "normalized.json").read_text(encoding="utf-8"))
+    assert payload["asset_knowledge"]["profile_revision"] == "b" * 64
+    assert "profile_path" not in payload["asset_knowledge"]
 
 
 def test_main_accepts_valid_json_scan_config(monkeypatch, tmp_path, capsys):

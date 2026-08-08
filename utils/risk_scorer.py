@@ -977,7 +977,11 @@ def _resolve_business_context_inputs(
             )
         )
     )
-    if "requires_auth" not in business_context and _get_finding_value(finding, "requires_auth") is None:
+    if (
+        "requires_auth" not in business_context
+        and _get_finding_value(finding, "requires_auth") is None
+        and _get_context_value(context, "requires_auth", asset_id) is None
+    ):
         requires_auth = _check_auth_required(finding)
 
     return {

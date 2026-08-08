@@ -1165,3 +1165,96 @@ def test_correlation_graph_is_stable_and_limited_to_ten_cases():
     assert "Showing 10 of 11 correlation cases" in graph
     assert graph.find("Finding 00") < graph.find("Finding 01")
     assert "Finding 10" not in graph
+
+
+def test_report_separates_ai_advice_from_scanner_evidence_and_risk():
+    finding = _minimal_finding(
+        risk_score=68,
+        priority="P1",
+        risk_rationale="Deterministic technical and confirmed business inputs.",
+        ai_analysis_status="completed",
+        applicability={
+            "status": "likely_valid",
+            "confidence": 0.88,
+            "reason": "The affected endpoint and parameter are present in scanner evidence.",
+            "evidence_ids": ["finding-description", "finding-evidence"],
+        },
+        ai_remediation={
+            "steps": ["Use parameterized queries."],
+            "verification": ["Repeat the request with a safe SQL corpus."],
+        },
+    )
+    results = _results(finding)
+    results["ai_analysis_summary"] = {
+        "status": "completed",
+        "model": "demo-model",
+        "limit": 10,
+        "selected_count": 1,
+        "analyzed_count": 1,
+        "cached_count": 0,
+        "unavailable_count": 0,
+        "skipped_limit_count": 0,
+        "needs_review_count": 0,
+        "redaction_count": 0,
+        "latency_ms": 120.0,
+        "total_tokens": 100,
+        "estimated_cost_usd": 0.001,
+    }
+
+    html = generate_html_report(results)
+
+    assert "Advisory AI Analysis" in html
+    assert "Likely valid" in html
+    assert "88% model confidence" in html
+    assert "Suggested remediation" in html
+    assert "Use parameterized queries." in html
+    assert "Verification" in html
+    assert "scanner evidence and deterministic risk remain authoritative" in html
+    assert "Risk 68/100" in html
+    assert "AI Analysis Run" in html
+    assert "demo-model" in html
+    assert "100" in html
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [
+        ("unavailable", "AI analysis unavailable"),
+        ("skipped_limit", "AI analysis not selected"),
+    ],
+)
+def test_report_explains_non_completed_ai_analysis(status, expected):
+    html = generate_html_report(_results(_minimal_finding(ai_analysis_status=status)))
+
+    assert expected in html
+    assert "Advisory AI Analysis" not in html
+
+
+def test_report_shows_confirmed_site_risk_context_and_revision():
+    results = _results(_minimal_finding())
+    results["asset_knowledge"] = {
+        "description": "Public customer account portal.",
+        "reviewer": "analyst",
+        "profile_revision": "1234567890abcdef",
+        "analysis_source": "llm",
+        "risk_context": {
+            "asset_criticality": "high",
+            "environment": "production",
+            "sensitive_data": True,
+            "requires_auth": True,
+            "confidence": 0.84,
+            "reason": "The reviewed site profile describes a production account portal.",
+            "evidence_ids": ["page-1"],
+        },
+    }
+
+    html = generate_html_report(results)
+
+    assert "Confirmed Site Context" in html
+    assert "Public customer account portal." in html
+    assert "1234567890ab" in html
+    assert "Confirmed scoring context" in html
+    assert "Asset criticality" in html
+    assert "Production" in html
+    assert "Sensitive data" in html
+    assert "Authentication required" in html

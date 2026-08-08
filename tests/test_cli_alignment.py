@@ -57,7 +57,8 @@ def test_documented_pipeline_order_matches_main():
             "results = resolver.apply(results)",
             "results = add_comparison_to_results(results, data_dir)",
             "results = _apply_asset_context_to_results(results, asset_context_rules)",
-            "results = score_vulnerabilities(results, context=results)",
+            "results = score_vulnerabilities(",
+            "results = LLMFindingAnalyzer(",
             "results = sanitize_results_for_export(results)",
             "json_path = orchestrator.save_results(results, args.output)",
         ],
@@ -65,19 +66,26 @@ def test_documented_pipeline_order_matches_main():
     _assert_in_order(
         readme,
         [
-            "**Scan / Normalize**",
-            "**LLM Duplicate Resolution**",
-            "**Compare**",
-            "**Asset Context**",
-            "**Risk Scoring**",
-            "**Save**",
-            "**Report**",
+            "scan and normalize",
+            "conservative cross-scanner deduplication",
+            "optional comparison with the previous scan",
+            "asset context and deterministic risk scoring",
+            "bounded advisory finding analysis",
+            "sanitized JSON and self-contained HTML report",
         ],
     )
-    assert (
-        "scan / normalize → llm duplicate resolution → compare "
-        "→ asset context → risk scoring → save / report"
-    ) in walkthrough.lower()
+    _assert_in_order(
+        walkthrough,
+        [
+            "scan or offline ZAP import",
+            "normalize",
+            "structured LLM duplicate resolution",
+            "optional history comparison",
+            "deterministic risk scoring",
+            "structured advisory LLM analysis",
+            "sanitize / validate / save / HTML report",
+        ],
+    )
 
 
 def test_docs_describe_current_and_removed_enrichment_flags_correctly():
@@ -95,20 +103,22 @@ def test_docs_describe_current_and_removed_enrichment_flags_correctly():
         assert removed_flag not in walkthrough
 
 
-def test_docs_describe_knowledge_db_as_duplicate_cache():
-    readme = (ROOT / "README.md").read_text(encoding="utf-8").lower()
+def test_docs_describe_knowledge_db_as_versioned_llm_caches():
+    readme = " ".join((ROOT / "README.md").read_text(encoding="utf-8").lower().split())
     walkthrough = (ROOT / "docs" / "walkthrough.md").read_text(encoding="utf-8").lower()
 
     assert "duplicate-resolution cache" in readme
-    assert "duplicate decisions" in readme
+    assert "advisory finding-analysis cache" in readme
 
-    assert "duplicate-resolution cache" in walkthrough
-    assert "scanner-derived fields" in walkthrough
+    assert "decisions are cached by finding evidence" in walkthrough
+    assert "scanner evidence as the source of truth" in walkthrough
 
 
 def test_docs_describe_reports_as_default_for_normal_scans():
     readme = (ROOT / "README.md").read_text(encoding="utf-8").lower()
-    walkthrough = (ROOT / "docs" / "walkthrough.md").read_text(encoding="utf-8").lower()
+    walkthrough = " ".join(
+        (ROOT / "docs" / "walkthrough.md").read_text(encoding="utf-8").lower().split()
+    )
 
     assert "normal scan runs write `report.html` automatically" in readme
     assert "--no-report" in readme
@@ -141,8 +151,8 @@ def test_docs_do_not_describe_removed_steps_or_incomplete_report():
     assert "impact knowledge layer" not in walkthrough
     assert "knowledge/vuln_knowledge.yaml" not in readme
     assert "knowledge/vuln_knowledge.yaml" not in walkthrough
-    assert "scanner-normalized `description` field" in readme
-    assert "report content comes directly from the normalized scanner fields" in readme
+    assert "scanner evidence" in readme
+    assert "scanner-native vulnerability name" in readme
 
 
 def test_demo_wrapper_text_matches_current_pipeline_description():

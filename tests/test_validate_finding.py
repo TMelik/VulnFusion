@@ -144,6 +144,9 @@ def test_schema_definition_includes_expected_properties():
         "priority",
         "risk_factors",
         "risk_rationale",
+        "ai_analysis_status",
+        "applicability",
+        "ai_remediation",
     ):
         assert field in props
     for removed in (
@@ -163,6 +166,96 @@ def test_schema_definition_includes_expected_properties():
         "cto_summary",
     ):
         assert removed not in props
+
+
+def test_public_ai_advisory_fields_pass_validation():
+    finding = _valid_base()
+    finding.update(
+        {
+            "ai_analysis_status": "completed",
+            "applicability": {
+                "status": "likely_valid",
+                "confidence": 0.88,
+                "reason": "The scanner identifies the affected endpoint and parameter.",
+                "evidence_ids": ["finding-description", "finding-evidence"],
+            },
+            "ai_remediation": {
+                "steps": ["Use parameterized queries."],
+                "verification": ["Repeat the request with a safe SQL test corpus."],
+            },
+        }
+    )
+
+    ok, errs = validate_finding(finding)
+
+    assert ok is True, errs
+
+
+@pytest.mark.parametrize(
+    ("mutator", "error_fragment"),
+    [
+        (lambda finding: finding.update(ai_analysis_status="invented"), "ai_analysis_status"),
+        (
+            lambda finding: finding["applicability"].update(confidence=True),
+            "applicability.confidence",
+        ),
+        (
+            lambda finding: finding["applicability"].update(status="confirmed"),
+            "applicability.status",
+        ),
+        (
+            lambda finding: finding["applicability"].update(extra="not allowed"),
+            "exactly",
+        ),
+        (
+            lambda finding: finding["ai_remediation"].update(steps=[]),
+            "ai_remediation.steps",
+        ),
+    ],
+)
+def test_invalid_public_ai_advisory_fields_are_rejected(mutator, error_fragment):
+    finding = _valid_base()
+    finding.update(
+        {
+            "ai_analysis_status": "completed",
+            "applicability": {
+                "status": "needs_review",
+                "confidence": 0.5,
+                "reason": "Evidence is incomplete.",
+                "evidence_ids": ["finding-description"],
+            },
+            "ai_remediation": {
+                "steps": ["Review the affected handler."],
+                "verification": ["Repeat the scanner request."],
+            },
+        }
+    )
+    mutator(finding)
+
+    ok, errs = validate_finding(finding)
+
+    assert ok is False
+    assert any(error_fragment in error for error in errs), errs
+
+
+def test_completed_ai_status_requires_both_advisory_objects():
+    finding = _valid_base()
+    finding["ai_analysis_status"] = "completed"
+
+    ok, errs = validate_finding(finding)
+
+    assert ok is False
+    assert any("applicability" in error for error in errs)
+    assert any("ai_remediation" in error for error in errs)
+
+
+def test_unavailable_ai_status_is_valid_without_advisory_objects():
+    finding = _valid_base()
+    finding["ai_analysis_status"] = "unavailable"
+
+    ok, errs = validate_finding(finding)
+
+    assert ok is True, errs
 
 
 def test_schema_definition_includes_merged_provenance_meta_properties():

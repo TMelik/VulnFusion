@@ -1,121 +1,159 @@
-# Scanner-Native Pipeline Walkthrough
+# VulnFusion Pipeline Walkthrough
 
-## Summary
+## What the normal run does
 
-The active pipeline keeps scanner-native finding text as the source of truth,
-then adds deterministic prioritization before export. The final JSON and HTML
-report are built from normalized scanner fields, dedupe/comparison state, and
-public runtime risk fields rather than internal debug structures.
+VulnFusion keeps scanner evidence as the source of truth, then adds two clearly
+separated layers:
 
-The report content comes directly from the normalized scanner fields, including
-`vulnerability_name`, `severity`, `asset_id`, `description`, `remediation`, and
-other scanner-derived fields. Runtime scoring adds public fields such as
-`risk_score`, `priority`, `risk_rationale`, and `risk_factors`.
+- deterministic correlation and risk prioritization;
+- advisory LLM applicability and remediation guidance.
 
-## Current Pipeline Order
+The LLM cannot delete a finding, replace scanner evidence, or change
+`risk_score`/`priority`.
 
 ```text
-scan / normalize → llm duplicate resolution → compare → asset context → risk scoring → save / report
+optional bounded context discovery/reuse
+  -> scan or offline ZAP import
+  -> normalize
+  -> structured LLM duplicate resolution
+  -> optional history comparison
+  -> manual + confirmed site context
+  -> deterministic risk scoring
+  -> structured advisory LLM analysis
+  -> sanitize / validate / save / HTML report
 ```
 
-This matches `main.py`:
+## 1. Optional pre-scan site context
 
-1. Scan and normalize findings from the selected scanners.
-2. Apply LLM duplicate resolution and preserve merged provenance without
-   exporting duplicate traces.
-3. Apply comparison state when `--compare` is enabled so repeatability/history
-   can inform later scoring.
-4. Apply optional `--asset-context-file` rules to current findings.
-5. Score findings with the runtime risk model.
-6. Sanitize export payloads, validate them, save JSON, and render the report.
+`--discover-context` performs a small, fail-open discovery before scanners run:
 
-Normal scan runs render the HTML report automatically after save. Utility flows
-such as `--probe-only` and `--list-scanners` exit before the save/report stage.
+- at most three same-site HTML pages;
+- allowlisted HTTP metadata from those responses;
+- DNS A/AAAA addresses without reverse lookups;
+- allowlisted TLS certificate and connection metadata for HTTPS.
 
-The YAML knowledge store remains in the project as a duplicate-resolution cache
-for LLM decisions and related provenance data.
+There is no search API, ASN lookup, or deep crawl. The configured LLM receives
+bounded, secret-sanitized evidence and returns a strict description, business
+processes, citations, uncertainties, and a proposed `risk_context`. If the LLM
+is unavailable, page metadata supplies a visible fallback instead of stopping
+the scan.
 
-## Source Of Truth
+The CLI displays both the description and the risk proposal. Only after the
+user confirms them does VulnFusion write a site-specific OKF bundle under
+`data/asset_knowledge/<site-key>/`. Each bundle has a current `profile.md`, an
+append-only log, and immutable `revisions/<sha256>.md` snapshots. A non-stale,
+human-confirmed profile is reused automatically on later scans; use
+`--no-context-reuse` to disable reuse or `--discover-context` to refresh it.
 
-The report content comes directly from the normalized scanner fields.
+Confirmed context may affect deterministic business-risk inputs. Unknown or
+unconfirmed proposals do not. Site context never changes duplicate identity:
+correlation still depends on technical instance anchors such as path,
+parameter, method, port/service, CVE, and scanner identity.
 
-Important consequences:
+## 2. Scanning and normalization
 
-- `Description:` in the HTML report comes from the normalized `description` field.
-- `Remediation:` in the HTML report comes from the normalized `remediation` field.
-- Exported scanner-derived fields remain the source of truth for user-visible
-  finding content.
-- Scanner metadata remains in `meta` and can still carry useful identifiers
-  such as `raw_id`, `cve_id`, `cve_ids`, and `cwe`.
-- Merged `source_findings` still preserve source evidence and provenance.
-- Runtime risk fields are exported, but duplicate traces, transport internals,
-  and other debug-only sidecars are still stripped.
+The selected scanners produce native output, and their normalizers convert it
+to the shared finding schema. For a conservative demo:
 
-Removed from the exported runtime/output flow:
-
-- duplicate-resolution traces used only for debugging
-- transport/probe execution overlays
-- internal fingerprints and matching helpers
-- raw meta sidecars used to derive scoring inputs
-
-## Exported Contract
-
-`utils/schema.py` now documents the active exported finding contract, including:
-
-- scanner-native finding fields
-- dedupe/provenance fields
-- comparison status/change-tracking labels
-- public runtime risk fields
-- `summary.by_priority` when scoring is present
-
-Validation stays strict. Malformed `risk_score`, `priority`, `risk_rationale`,
-or other unsupported exported fields are rejected instead of being silently accepted.
-
-## Report Rendering
-
-`utils/report_generator.py` keeps the report readable while surfacing risk:
-
-- finding title and severity
-- affected asset
-- scanner provenance
-- normalized description and remediation
-- comparison status when present
-- priority and risk score badges
-- `Why this is prioritized` from `risk_rationale`
-- `Priority Distribution` when scored findings are present
-
-Higher-priority findings naturally sort first when scoring is active.
-
-## Programmatic Example
-
-```python
-import json
-
-with open("data/example.com/latest/normalized.json", encoding="utf-8") as handle:
-    results = json.load(handle)
-
-for finding in results["all_findings"]:
-    print(f"Title: {finding['vulnerability_name']}")
-    print(f"Severity: {finding['severity']}")
-    print(f"Priority: {finding.get('priority')}")
-    print(f"Risk: {finding.get('risk_score')}")
-    print(f"Why prioritized: {finding.get('risk_rationale')}")
+```bash
+uv run python main.py --target https://example.com --scanner all \
+  --scan-config configs/examples/polite_demo_config.yaml
 ```
 
-## Relevant Files
+The polite profile runs bounded Nmap/Nuclei checks. ZAP stays off unless the
+operator chooses one explicit route:
 
-1. `main.py`
-2. `utils/asset_context.py`
-3. `utils/risk_scorer.py`
-4. `utils/report_generator.py`
-5. `utils/schema.py`
-6. `utils/export_sanitizer.py`
-7. `utils/result_summary.py`
+- `--with-zap` enables the conservative passive ZAP template; adding
+  `--zap-active-scan` is an explicit active-scan decision;
+- `--zap-report report.json` imports an existing ZAP Traditional JSON report
+  without starting another ZAP run.
 
-## Conclusion
+`--with-zap` and `--zap-report` are mutually exclusive.
 
-The runtime pipeline keeps scanner-derived finding content intact while using
-LLM duplicate resolution, comparison, optional asset context, and deterministic
-risk scoring to improve prioritization before save/report. Exported JSON and
-HTML now include public risk fields while continuing to strip internal-only
-debug structures.
+## 3. Correlation, comparison, and risk
+
+Structured duplicate resolution merges only a positive decision with
+confidence at least `0.85`. Low-confidence positive pairs remain separate and
+become review candidates. Invalid output, timeout, or provider failure means no
+merge. The exported `correlation` object exposes safe structured decisions;
+the scanner-native `vulnerability_name` remains unchanged.
+
+When `--compare` is enabled, history labels findings as new, persistent,
+changed, or fixed. Optional `--asset-context-file` rules and human-confirmed
+site context are then applied before the deterministic risk scorer creates:
+
+- `risk_score` (`0`-`100`);
+- `priority` (`P0`-`P4`);
+- `risk_factors`;
+- `risk_rationale`.
+
+## 4. Advisory finding analysis
+
+When the same LLM provider is configured, VulnFusion automatically analyzes
+the highest-priority final findings, up to 10 by default. Override the cap with
+`--ai-analysis-limit`; disable this layer with `--no-ai-analysis`.
+
+The strict response adds:
+
+- `applicability.status`, `confidence`, `reason`, and cited `evidence_ids`;
+- `ai_remediation.steps` and `verification`.
+
+Decisions are cached by finding evidence, model, prompt/schema semantics, and
+confirmed context revision. Findings beyond the cap are marked
+`skipped_limit`; malformed responses and provider failures are marked
+`unavailable`. In every case, the original finding and deterministic risk
+remain visible.
+
+The run writes sanitized AI totals to `ai_analysis_metrics.json`: analyzed,
+cached, review, unavailable and skipped counts, redactions, latency, tokens,
+and estimated cost when pricing variables are configured.
+
+## 5. Export and report
+
+Before saving, `utils/export_sanitizer.py` removes internal/debug fields and
+strictly allowlists public site-context, correlation, and AI-advice objects.
+`utils/schema.py` validates the result, which is written to `normalized.json`
+and rendered as `report.html`.
+
+Utility flows such as `--probe-only` and `--list-scanners` exit before the
+save/report stage.
+
+The report deliberately separates:
+
+- scanner-derived description, evidence, and remediation;
+- deterministic correlation and risk;
+- advisory applicability, remediation, verification, limitations, and run
+  diagnostics.
+
+This makes failure visible instead of silently hiding a result.
+
+## Evaluation
+
+Create human labels and evaluate without making another LLM call:
+
+```bash
+uv run python -m utils.ai_evaluation \
+  --results data/example/latest/normalized.json \
+  --write-label-template evaluation/labels.json
+
+uv run python -m utils.ai_evaluation \
+  --results data/example/latest/normalized.json \
+  --labels evaluation/labels.json \
+  --output evaluation/ai_evaluation.json
+```
+
+The artifact reports applicability agreement/coverage, review and failure
+counts, wrong false-positive decisions, and human ratings for whether suggested
+remediation is supported, actionable, and verifiable.
+
+## Authoritative implementation files
+
+- `main.py`
+- `utils/site_context.py`
+- `utils/llm_duplicate_resolver.py`
+- `utils/risk_scorer.py`
+- `utils/llm_finding_analyzer.py`
+- `utils/export_sanitizer.py`
+- `utils/schema.py`
+- `utils/report_generator.py`
+- `utils/ai_evaluation.py`

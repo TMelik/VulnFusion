@@ -40,6 +40,10 @@ SUPPORTED_GLOBAL_SETTINGS = {
 }
 SUPPORTED_SCAN_MODES = {"automatic", "manual"}
 SUPPORTED_HTTP_MODES = {"auto", "http1", "http2"}
+POLITE_ZAP_TIMEOUT_SECONDS = 120
+POLITE_ZAP_TEMPLATE_PATH = (
+    Path(__file__).resolve().parent.parent / "configs" / "examples" / "polite_zap_template.yaml"
+)
 
 
 @dataclass
@@ -153,7 +157,7 @@ def resolve_scan_config(
         scanners,
         config_path,
     )
-    if getattr(args, "zap_report", None):
+    if getattr(args, "zap_report", None) or getattr(args, "with_zap", False):
         scanner_enabled["zap"] = True
         config_disabled_scanners.discard("zap")
 
@@ -518,12 +522,33 @@ def _apply_cli_scanner_overrides(
             "args": shlex.split(args.nikto_args),
         }
 
-    zap_options = dict(scanner_options.get("zap", {}))
+    zap_report = getattr(args, "zap_report", None)
+    if zap_report:
+        # Offline import replaces live ZAP execution. Do not let a config-owned
+        # Automation Framework plan (or other live option) make an otherwise
+        # valid --zap-report invocation fail scanner validation. Explicit CLI
+        # conflicts are rejected earlier in main.py.
+        zap_options = (
+            {}
+            if preserve_legacy_scan_defaults
+            else dict(scanners["zap"].get_default_options())
+        )
+    else:
+        zap_options = dict(scanner_options.get("zap", {}))
     if preserve_legacy_scan_defaults:
         zap_options.setdefault("timeout", args.zap_timeout)
         zap_options.setdefault("use_proxy", False)
         zap_options.setdefault("proxy_url", None)
         zap_options.setdefault("original_target", None)
+
+    if getattr(args, "with_zap", False) and not zap_report:
+        # --with-zap is the conservative convenience route. Do not inherit a
+        # config-owned template or active_scan value that could silently turn
+        # this explicit passive pass into an active scan.
+        zap_options["af_plan_path"] = str(POLITE_ZAP_TEMPLATE_PATH)
+        zap_options.pop("active_scan", None)
+        if "zap_timeout" not in explicit_cli:
+            zap_options["timeout"] = POLITE_ZAP_TIMEOUT_SECONDS
 
     if "zap_timeout" in explicit_cli:
         zap_options["timeout"] = args.zap_timeout
@@ -531,10 +556,10 @@ def _apply_cli_scanner_overrides(
         zap_options["active_scan"] = True
     if args.zap_args:
         zap_options["args"] = shlex.split(args.zap_args)
-    if args.zap_af_plan:
+    if args.zap_af_plan and not getattr(args, "with_zap", False):
         zap_options["af_plan_path"] = args.zap_af_plan
-    if getattr(args, "zap_report", None):
-        zap_options["report_path"] = args.zap_report
+    if zap_report:
+        zap_options["report_path"] = zap_report
     if args.zap_use_proxy:
         zap_options["use_proxy"] = True
     if args.zap_proxy_url and (args.zap_use_proxy or zap_options.get("use_proxy")):

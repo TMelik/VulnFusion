@@ -9,7 +9,7 @@ output.
 
 Public evidence for the local need:
 
-- the [USAID Armenia Digital Ecosystem Country Assessment](https://www.usaid.gov/sites/default/files/2024-07/USAID_DECA_Armenia.pdf)
+- the [USAID Armenia Digital Ecosystem Country Assessment](https://web.archive.org/web/20241228070807if_/https://www.usaid.gov/sites/default/files/2024-07/USAID_DECA_Armenia.pdf)
   describes a mismatch between cybersecurity needs and available expertise;
 - Armenia's official [Law on Cybersecurity](https://hightech.gov.am/articles/laws/%D5%AF%D5%AB%D5%A2%D5%A5%D5%BC%D5%A1%D5%B6%D5%BE%D5%BF%D5%A1%D5%B6%D5%A3%D5%B8%D6%82%D5%A9%D5%B5%D5%A1%D5%B6-%D5%B4%D5%A1%D5%BD%D5%AB%D5%B6-%D6%85%D6%80%D5%A5%D5%B6%D6%84)
   establishes the importance of vital sectors and critical information

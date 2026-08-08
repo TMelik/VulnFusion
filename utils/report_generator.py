@@ -397,6 +397,148 @@ def _render_source_evidence(finding: Dict[str, Any]) -> tuple[str, str]:
     return summary_html, details_html
 
 
+def _correlation_confidence_percent(value: Any) -> Optional[int]:
+    """Return a 0-100 integer percent for a model-reported confidence, or None."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if not 0.0 <= float(value) <= 1.0:
+        return None
+    return round(float(value) * 100)
+
+
+def _render_correlation(finding: Dict[str, Any]) -> str:
+    """Render the public LLM correlation advisory for one finding.
+
+    Consumes only the whitelisted `correlation` contract (see
+    utils/export_sanitizer._sanitize_correlation). All model/scanner text is
+    treated as untrusted and HTML-escaped; nothing is rendered raw. Returns an
+    empty string when the finding carries no valid correlation object.
+    """
+    correlation = finding.get('correlation')
+    if not isinstance(correlation, dict):
+        return ""
+    status = correlation.get('status')
+    if status not in ('merged', 'needs_review'):
+        return ""
+    if correlation.get('source') != 'llm':
+        return ""
+
+    needs_review = bool(correlation.get('needs_review'))
+    review_candidates = correlation.get('review_candidates')
+    if not isinstance(review_candidates, list):
+        review_candidates = []
+
+    # State badge: merged vs needs-review. The canonical_title is only ever an
+    # AI suggestion and never replaces the scanner-native vulnerability_name.
+    if status == 'merged':
+        state_badge = (
+            '<span class="badge correlation-badge correlation-merged">'
+            'Merged by AI correlation</span>'
+        )
+    else:
+        state_badge = (
+            '<span class="badge correlation-badge correlation-review">'
+            'Needs review</span>'
+        )
+
+    percent = _correlation_confidence_percent(correlation.get('confidence'))
+    confidence_badge = (
+        f'<span class="badge correlation-confidence">Confidence {percent}%</span>'
+        if percent is not None else ''
+    )
+
+    # Drive the review warning off needs_review/candidates, not status alone:
+    # a merged cluster can still carry an uncertain external candidate.
+    review_warning = ""
+    if needs_review or review_candidates:
+        review_warning = (
+            '<div class="correlation-review-warning">'
+            'Potential duplicate flagged for human review — the original '
+            'finding is retained.</div>'
+        )
+
+    reason = escape(str(correlation.get('reason') or '').strip())
+    canonical_title = escape(str(correlation.get('canonical_title') or '').strip())
+
+    reason_html = (
+        f'<div class="correlation-reason"><strong>Reason:</strong> {reason}</div>'
+        if reason else ''
+    )
+    canonical_html = (
+        '<div class="correlation-canonical">'
+        '<strong>Suggested canonical title:</strong> '
+        f'<span class="correlation-canonical-value">{canonical_title}</span> '
+        '<span class="correlation-hint">(AI suggestion — not applied)</span>'
+        '</div>'
+        if canonical_title else ''
+    )
+
+    # Review candidates: render in the order received; never re-sort here.
+    candidates_html = ""
+    candidate_items = ""
+    for candidate in review_candidates:
+        if not isinstance(candidate, dict):
+            continue
+        cand_name = escape(str(candidate.get('vulnerability_name') or '').strip()) or 'Unknown'
+        cand_reason = escape(str(candidate.get('reason') or '').strip())
+        cand_canonical = escape(str(candidate.get('canonical_title') or '').strip())
+        scanners = candidate.get('scanners')
+        if isinstance(scanners, list):
+            cand_scanners = escape(
+                ', '.join(str(s) for s in scanners if isinstance(s, str) and s.strip())
+            )
+        else:
+            cand_scanners = ''
+        cand_percent = _correlation_confidence_percent(candidate.get('confidence'))
+        cand_conf = (
+            f'<span class="badge correlation-confidence">{cand_percent}%</span>'
+            if cand_percent is not None else ''
+        )
+        provenance = (
+            f'<div class="correlation-candidate-scanners">Found by: {cand_scanners}</div>'
+            if cand_scanners else ''
+        )
+        reason_line = (
+            f'<div class="correlation-candidate-reason">{cand_reason}</div>'
+            if cand_reason else ''
+        )
+        canonical_line = (
+            '<div class="correlation-candidate-canonical">'
+            f'Suggested canonical title: {cand_canonical}</div>'
+            if cand_canonical else ''
+        )
+        candidate_items += (
+            '<li class="correlation-candidate">'
+            '<div class="correlation-candidate-head">'
+            f'{cand_conf}<span class="correlation-candidate-name">{cand_name}</span>'
+            '</div>'
+            f'{provenance}{reason_line}{canonical_line}'
+            '</li>'
+        )
+    if candidate_items:
+        candidates_html = (
+            '<div class="correlation-candidates-label">Review candidates</div>'
+            f'<ul class="correlation-candidates">{candidate_items}</ul>'
+        )
+
+    disclaimer = (
+        '<div class="correlation-disclaimer">Confidence is model-reported, not a '
+        'proven probability. AI correlation is advisory only.</div>'
+    )
+    details_body = f'{reason_html}{canonical_html}{candidates_html}{disclaimer}'
+
+    return (
+        '<div class="finding-correlation">'
+        f'<div class="correlation-badges">{state_badge}{confidence_badge}</div>'
+        f'{review_warning}'
+        '<details class="correlation-details">'
+        '<summary>AI correlation details</summary>'
+        f'<div class="correlation-details-body">{details_body}</div>'
+        '</details>'
+        '</div>'
+    )
+
+
 def _collect_degraded_scanners(finding: Dict[str, Any]) -> List[str]:
     """Return scanner names whose preserved evidence was degraded."""
     degraded: List[str] = []
@@ -721,6 +863,7 @@ def generate_modern_html_report(results: Dict[str, Any]) -> str:
 
         merge_summary_html, source_evidence_html = _render_source_evidence(finding)
         render_scanner_native_top_level = not bool(source_evidence_html)
+        correlation_html = _render_correlation(finding)
         finding_scanners = _collect_finding_scanners(finding)
         scanner_provenance = ", ".join(finding_scanners) if finding_scanners else "unknown"
 
@@ -807,6 +950,7 @@ def generate_modern_html_report(results: Dict[str, Any]) -> str:
                 {f'<div class="finding-description"><strong>Description:</strong><p>{description}</p></div>' if render_scanner_native_top_level and description else ''}
                 {f'<div class="finding-impact"><strong>Impact:</strong><p>{impact}</p></div>' if render_scanner_native_top_level and impact else ''}
                 {f'<div class="finding-remediation"><strong>Remediation:</strong><p>{remediation}</p></div>' if render_scanner_native_top_level and remediation else ''}
+                {correlation_html}
                 {merge_summary_html}
                 {source_evidence_html}
             </div>
@@ -823,6 +967,7 @@ def generate_modern_html_report(results: Dict[str, Any]) -> str:
             changed_fields = finding.get('changed_fields', [])
             finding_scanners = _collect_finding_scanners(finding)
             scanner_provenance = ", ".join(finding_scanners) if finding_scanners else "unknown"
+            correlation_html = _render_correlation(finding)
 
             severity_color = _get_severity_color(severity)
             changed_color = "#f97316"
@@ -858,6 +1003,7 @@ def generate_modern_html_report(results: Dict[str, Any]) -> str:
                         <code>{asset}</code>
                     </div>
                     <div class="finding-provenance">Found by: {escape(scanner_provenance)}</div>
+                    {correlation_html}
                     <div class="changes-section">
                         <div class="changes-header">⚠️ Changes Detected</div>
                         {changes_html}
@@ -1887,6 +2033,137 @@ def generate_modern_html_report(results: Dict[str, Any]) -> str:
             display: block;
             margin-top: 0.375rem;
             font-size: 0.85rem;
+            color: var(--text-muted);
+        }}
+
+        .finding-correlation {{
+            margin-bottom: 1rem;
+            padding: 0.875rem 1rem;
+            background: var(--bg-tertiary);
+            border-left: 3px solid var(--accent);
+            border-radius: 0.5rem;
+            color: var(--text-secondary);
+            overflow-wrap: anywhere;
+            word-break: break-word;
+        }}
+
+        .correlation-badges {{
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+            align-items: center;
+        }}
+
+        .correlation-badge {{
+            color: #fff;
+        }}
+
+        .correlation-merged {{
+            background: var(--accent);
+        }}
+
+        .correlation-review {{
+            background: #f59e0b;
+            color: #1f2937;
+        }}
+
+        .correlation-confidence {{
+            background: var(--bg-secondary);
+            color: var(--text-secondary);
+            border: 1px solid var(--border);
+        }}
+
+        .correlation-review-warning {{
+            margin-top: 0.625rem;
+            padding: 0.625rem 0.75rem;
+            background: rgba(245, 158, 11, 0.12);
+            border-left: 3px solid #f59e0b;
+            border-radius: 0.375rem;
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+        }}
+
+        .correlation-details {{
+            margin-top: 0.625rem;
+        }}
+
+        .correlation-details > summary {{
+            cursor: pointer;
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+            user-select: none;
+        }}
+
+        .correlation-details > summary:hover {{
+            color: var(--text-primary);
+        }}
+
+        .correlation-details-body {{
+            margin-top: 0.625rem;
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+        }}
+
+        .correlation-reason strong,
+        .correlation-canonical strong {{
+            color: var(--text-primary);
+        }}
+
+        .correlation-canonical-value {{
+            font-style: italic;
+        }}
+
+        .correlation-hint {{
+            font-size: 0.8rem;
+            color: var(--text-muted);
+        }}
+
+        .correlation-candidates-label {{
+            margin-top: 0.25rem;
+            font-weight: 600;
+            color: var(--text-primary);
+        }}
+
+        .correlation-candidates {{
+            list-style: none;
+            margin: 0.25rem 0 0 0;
+            padding: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+        }}
+
+        .correlation-candidate {{
+            padding: 0.625rem 0.75rem;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 0.375rem;
+        }}
+
+        .correlation-candidate-head {{
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 0.5rem;
+        }}
+
+        .correlation-candidate-name {{
+            font-weight: 600;
+            color: var(--text-primary);
+        }}
+
+        .correlation-candidate-scanners,
+        .correlation-candidate-reason,
+        .correlation-candidate-canonical {{
+            margin-top: 0.375rem;
+            font-size: 0.85rem;
+            color: var(--text-muted);
+        }}
+
+        .correlation-disclaimer {{
+            margin-top: 0.25rem;
+            font-size: 0.8rem;
             color: var(--text-muted);
         }}
 

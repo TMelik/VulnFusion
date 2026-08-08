@@ -39,6 +39,9 @@ flow (`--duplicate-mode off` disables this stage entirely).
    `correlation`. `canonical_title` is an AI recommendation and never replaces
    the scanner-derived `vulnerability_name`.
 
+The benchmark and product-evidence plan for this stage is documented in
+[/llm-effectiveness-evidence.md](/llm-effectiveness-evidence.md).
+
 ## Configuration
 
 Generic OpenAI-compatible chat-completions contract:

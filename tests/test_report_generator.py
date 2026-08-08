@@ -4,6 +4,7 @@ from utils.comparator import _build_comparison_profile
 from utils.report_generator import (
     _extract_cve_ids,
     _group_findings_by_cve,
+    _render_correlation,
     generate_html_report,
     generate_modern_html_report,
 )
@@ -836,3 +837,186 @@ def test_report_renders_unknown_provenance_when_scanner_metadata_missing():
     )
 
     assert "Found by: unknown" in html
+
+
+def _merged_correlation(**extra) -> dict:
+    correlation = {
+        "status": "merged",
+        "source": "llm",
+        "confidence": 0.92,
+        "reason": "Same endpoint, method and vulnerable parameter",
+        "canonical_title": "SQL Injection in application lookup",
+        "needs_review": False,
+        "review_candidates": [],
+    }
+    correlation.update(extra)
+    return correlation
+
+
+def test_report_renders_merged_correlation_without_review_candidates():
+    html = generate_html_report(
+        _results(_minimal_finding(correlation=_merged_correlation()))
+    )
+
+    assert "Merged by AI correlation" in html
+    assert "Confidence 92%" in html
+    assert "Same endpoint, method and vulnerable parameter" in html
+    assert "Suggested canonical title:" in html
+    assert "SQL Injection in application lookup" in html
+    # A clean merge has no review affordances.
+    assert "Needs review" not in html
+    assert "Review candidates" not in html
+
+
+def test_report_renders_low_confidence_needs_review_correlation():
+    correlation = {
+        "status": "needs_review",
+        "source": "llm",
+        "confidence": 0.60,
+        "reason": "Same path but weaker parameter evidence",
+        "canonical_title": "Potential SQL Injection in lookup",
+        "needs_review": True,
+        "review_candidates": [
+            {
+                "finding_id": "finding-b",
+                "vulnerability_name": "Potential SQL Injection",
+                "scanners": ["wapiti"],
+                "confidence": 0.81,
+                "reason": "Same path but weaker parameter evidence",
+                "canonical_title": "Potential SQL Injection in lookup",
+            }
+        ],
+    }
+    html = generate_html_report(
+        _results(_minimal_finding(correlation=correlation))
+    )
+
+    assert "Needs review" in html
+    assert "human review" in html  # the non-alarming review warning
+    assert "Review candidates" in html
+    assert "Potential SQL Injection" in html
+    assert "Found by: wapiti" in html
+    assert "81%" in html
+
+
+def test_report_keeps_merged_status_but_warns_on_external_review_candidate():
+    correlation = _merged_correlation(
+        needs_review=True,
+        review_candidates=[
+            {
+                "finding_id": "finding-b",
+                "vulnerability_name": "Potential SQL Injection",
+                "scanners": ["wapiti"],
+                "confidence": 0.81,
+                "reason": "Same path but weaker parameter evidence",
+                "canonical_title": "Potential SQL Injection in lookup",
+            }
+        ],
+    )
+    html = generate_html_report(
+        _results(_minimal_finding(correlation=correlation))
+    )
+
+    # Status stays merged even though an uncertain external candidate exists.
+    assert "Merged by AI correlation" in html
+    assert "Needs review" not in html  # the state badge, not the warning
+    assert "human review" in html  # the review warning is still shown
+    assert "Review candidates" in html
+    assert "Potential SQL Injection" in html
+
+
+def test_report_renders_review_candidates_in_backend_order():
+    # Exercise the render helper directly so the export sanitizer's re-sort
+    # does not interfere: this proves the renderer preserves received order.
+    correlation = {
+        "status": "needs_review",
+        "source": "llm",
+        "confidence": 0.60,
+        "reason": "Ambiguous cluster",
+        "canonical_title": "Ambiguous SQLi",
+        "needs_review": True,
+        "review_candidates": [
+            {
+                "finding_id": "f-3",
+                "vulnerability_name": "Candidate Zulu",
+                "scanners": ["wapiti"],
+                "confidence": 0.70,
+                "reason": "r1",
+                "canonical_title": "c1",
+            },
+            {
+                "finding_id": "f-1",
+                "vulnerability_name": "Candidate Alpha",
+                "scanners": ["nuclei"],
+                "confidence": 0.71,
+                "reason": "r2",
+                "canonical_title": "c2",
+            },
+            {
+                "finding_id": "f-2",
+                "vulnerability_name": "Candidate Mike",
+                "scanners": ["zap"],
+                "confidence": 0.72,
+                "reason": "r3",
+                "canonical_title": "c3",
+            },
+        ],
+    }
+    html = _render_correlation(_minimal_finding(correlation=correlation))
+
+    pos_zulu = html.find("Candidate Zulu")
+    pos_alpha = html.find("Candidate Alpha")
+    pos_mike = html.find("Candidate Mike")
+    assert -1 < pos_zulu < pos_alpha < pos_mike
+
+
+def test_report_omits_correlation_ui_when_field_absent():
+    html = generate_html_report(_results(_minimal_finding()))
+
+    assert "Merged by AI correlation" not in html
+    assert "Needs review" not in html
+    assert "AI correlation details" not in html
+
+
+def test_report_escapes_correlation_untrusted_text():
+    payload = "<script>alert(1)</script>"
+    correlation = {
+        "status": "needs_review",
+        "source": "llm",
+        "confidence": 0.60,
+        "reason": payload,
+        "canonical_title": payload,
+        "needs_review": True,
+        "review_candidates": [
+            {
+                "finding_id": "finding-b",
+                "vulnerability_name": payload,
+                "scanners": ["wapiti"],
+                "confidence": 0.55,
+                "reason": payload,
+                "canonical_title": payload,
+            }
+        ],
+    }
+    html = generate_html_report(
+        _results(_minimal_finding(correlation=correlation))
+    )
+
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html
+    assert "<script>alert(1)</script>" not in html
+
+
+def test_report_does_not_replace_vulnerability_name_with_canonical_title():
+    finding = _minimal_finding(
+        vulnerability_name="Real Finding Name",
+        correlation=_merged_correlation(canonical_title="Different Canonical Title"),
+    )
+    html = generate_html_report(_results(finding))
+
+    # The scanner-native name is the finding title...
+    assert '<h3 class="finding-title">Real Finding Name</h3>' in html
+    # ...and the canonical title is never promoted into the title.
+    assert '<h3 class="finding-title">Different Canonical Title' not in html
+    # The canonical title only appears as an AI suggestion.
+    assert "Suggested canonical title:" in html
+    assert "Different Canonical Title" in html

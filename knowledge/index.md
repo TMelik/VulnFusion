@@ -25,7 +25,8 @@ deeper prose docs where they exist.
 | [pipeline.md](pipeline.md) | Pipeline | End-to-end scan → normalize → dedupe → compare → score → save/report flow |
 | [schema.md](schema.md) | Data Schema | The normalized finding schema (v2.0) and its validator |
 | [unified-vulnerability-db.md](unified-vulnerability-db.md) | Knowledge Store | YAML-backed store caching LLM dedupe decisions and synced scanner vulnerability metadata |
-| [llm-duplicate-resolution.md](llm-duplicate-resolution.md) | Pipeline Stage | Cross-scanner duplicate resolution via a cheap filter + LLM yes/no decision |
+| [llm-duplicate-resolution.md](llm-duplicate-resolution.md) | Pipeline Stage | Cross-scanner duplicate resolution via a cheap filter + strict structured LLM decision |
+| [llm-effectiveness-evidence.md](llm-effectiveness-evidence.md) | Evaluation Guide | How to compare raw, deterministic, single-prompt, and VulnFusion LLM deduplication |
 | [risk-scoring.md](risk-scoring.md) | Scoring Model | Deterministic risk score / priority / rationale computed per finding |
 | [defectdojo-integration.md](defectdojo-integration.md) | Integration | Raw-per-scan and merged upload paths to DefectDojo |
 | [scanners/index.md](scanners/index.md) | Index | The five scanner integrations (Nmap, Nuclei, Wapiti, Nikto, ZAP) |

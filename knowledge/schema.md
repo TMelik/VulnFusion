@@ -33,7 +33,7 @@ findings get deeper validation.
 
 - Dedup fields (from [/llm-duplicate-resolution.md](/llm-duplicate-resolution.md)):
   `match_level`, `merge_confidence`, `found_by`, `duplicate_count`,
-  `source_findings`.
+  `source_findings`, and the public structured LLM `correlation` advisory.
 - Comparison fields (`utils/comparator.py`): `status`, `changed_fields`.
 - Risk fields (from [/risk-scoring.md](/risk-scoring.md)): `risk_score`,
   `priority`, `risk_factors`, `risk_rationale`.

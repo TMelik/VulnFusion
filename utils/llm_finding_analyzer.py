@@ -466,6 +466,12 @@ def prepare_llm_finding_analysis_request(
         "model": str(model_name),
         "temperature": 0.0,
         "max_completion_tokens": LLM_FINDING_ANALYSIS_MAX_TOKENS,
+        # Reasoning-capable models (e.g. via OpenRouter) can otherwise spend
+        # the entire completion budget on hidden reasoning tokens and return
+        # an empty final answer (finish_reason="length", content=null) for
+        # this structured-JSON request. OpenAI-compatible servers that don't
+        # recognize this field ignore unknown top-level request keys.
+        "reasoning": {"enabled": False},
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": _stable_json(user_payload)},

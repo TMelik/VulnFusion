@@ -70,6 +70,43 @@ _HOSTNAME_RE = re.compile(
 )
 _ARTIFACT_NAMES = ("normalized.json", "scan_results.json")
 
+# Derive per-scanner progress from the CLI's own stdout markers
+# (orchestrator.py:1317 and orchestrator.py:2138) rather than adding a new
+# machine-readable channel to the scan pipeline. Cheap, UI-only, but blind to
+# scanners that fail before ever printing (e.g. "not available on this
+# system") until the whole job finishes.
+_SCANNER_START_RE = re.compile(r"^\[\*\] Running (\S+) scan against")
+_SCANNER_SAVED_RE = re.compile(r"^\[\+\] Raw output saved to: .*[\\/]raw[\\/](\w+)_")
+
+
+def _derive_scanner_progress(scanners: List[str], log: List[str], job_status: str) -> List[Dict[str, str]]:
+    """Return [{name, status}] for each requested scanner, newest info from log lines."""
+    if not scanners:
+        return []
+    started: set = set()
+    finished: set = set()
+    for line in log:
+        start_match = _SCANNER_START_RE.match(line)
+        if start_match and start_match.group(1) in scanners:
+            started.add(start_match.group(1))
+        saved_match = _SCANNER_SAVED_RE.match(line)
+        if saved_match and saved_match.group(1) in scanners:
+            finished.add(saved_match.group(1))
+    progress = []
+    for name in scanners:
+        if name in finished:
+            status = "success"
+        elif job_status != "running":
+            # The job ended without a "raw output saved" line for this
+            # scanner — most commonly because it isn't installed.
+            status = "failed"
+        elif name in started:
+            status = "running"
+        else:
+            status = "pending"
+        progress.append({"name": name, "status": status})
+    return progress
+
 
 # ---------------------------------------------------------------------------
 # Networking helpers
@@ -161,6 +198,10 @@ def build_scan_argv(
     """Construct the CLI invocation from validated primitives (no arbitrary flags)."""
     argv = [
         sys.executable,
+        # Force unbuffered stdout/stderr: piped (non-TTY) stdout is otherwise
+        # block-buffered by CPython, so the live job log would stay empty for
+        # the whole scan and dump everything at once when the process exits.
+        "-u",
         str(main_py),
         "--target", validate_target(target),
     ]
@@ -569,6 +610,9 @@ class JobManager:
                 "target": job.target, "scanner": job.scanner,
                 "scanners": list(job.scanners), "project_id": job.project_id,
                 "phase": job.phase, "log": job.log[-120:], "artifact": job.artifact,
+                # Derived from the full log (not the truncated tail above) so
+                # early scanner-start markers are never missed on long scans.
+                "scanner_progress": _derive_scanner_progress(job.scanners, job.log, job.status),
                 "context_draft": copy.deepcopy(job.context_draft) if job.phase == "awaiting_context_review" else None,
             }
 
@@ -1242,6 +1286,23 @@ _SPA_TEMPLATE = """<!doctype html>
     font-size: 0.68rem; color: var(--text-muted); letter-spacing: 0.03em;
   }
   .term-bar .tl { width: 8px; height: 8px; border-radius: 50%; background: var(--border); }
+  .scanner-progress { padding: 0.5rem 0.7rem; display: flex; flex-direction: column; gap: 0.3rem;
+    border-bottom: 1px solid var(--border); }
+  .scanner-progress:empty { display: none; }
+  .scanner-row { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem;
+    font-size: 0.75rem; }
+  .scanner-row .sname { color: var(--text-secondary); }
+  .scanner-status { display: inline-flex; align-items: center; gap: 0.35rem; font-size: 0.68rem;
+    font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; }
+  .scanner-status .sdot { width: 6px; height: 6px; border-radius: 50%; }
+  .scanner-status.st-pending { color: var(--text-muted); }
+  .scanner-status.st-pending .sdot { background: var(--border); }
+  .scanner-status.st-running { color: var(--accent); }
+  .scanner-status.st-running .sdot { background: var(--accent); animation: pulse-dot 1.2s ease-in-out infinite; }
+  .scanner-status.st-success { color: var(--ok); }
+  .scanner-status.st-success .sdot { background: var(--ok); }
+  .scanner-status.st-failed { color: var(--danger); }
+  .scanner-status.st-failed .sdot { background: var(--danger); }
   #joblog {
     white-space: pre-wrap; font-family: var(--mono); font-size: 0.72rem;
     color: #9ae6b4; padding: 0.6rem 0.7rem; max-height: 220px; overflow: auto;
@@ -1429,6 +1490,7 @@ _SPA_TEMPLATE = """<!doctype html>
     </div>
     <div class="term" id="jobterm">
       <div class="term-bar"><span class="tl"></span><span class="tl"></span><span class="tl"></span>&nbsp;job.log</div>
+      <div id="scannerProgress" class="scanner-progress"></div>
       <div id="joblog"></div>
     </div>
   </aside>
@@ -1824,6 +1886,23 @@ function renderFinding(f) {
 
 let pollTimer = null;
 
+const SCANNER_STATUS_LABELS = { pending: "Pending", running: "Running", success: "Done", failed: "Failed" };
+
+function renderScannerProgress(progress) {
+  const box = document.getElementById("scannerProgress");
+  box.textContent = "";
+  (progress || []).forEach(item => {
+    const status = item.status || "pending";
+    box.appendChild(el("div", { class: "scanner-row" }, [
+      el("span", { class: "sname", text: item.name }),
+      el("span", { class: "scanner-status st-" + status }, [
+        el("span", { class: "sdot" }),
+        document.createTextNode(SCANNER_STATUS_LABELS[status] || status),
+      ]),
+    ]));
+  });
+}
+
 // Shared by a freshly-started scan and by resumeJobIfRunning() reconnecting
 // to an already-running job after a page reload.
 function beginJobPolling(jobId, opts) {
@@ -1839,6 +1918,7 @@ function beginJobPolling(jobId, opts) {
     let info;
     try { info = await api("/api/jobs/" + encodeURIComponent(jobId)); }
     catch (e) { return; }
+    renderScannerProgress(info.scanner_progress);
     logBox.textContent = info.log.join("\\n");
     logBox.scrollTop = logBox.scrollHeight;
     if (info.phase === "awaiting_context_review" && info.context_draft && !document.getElementById("contextModal").classList.contains("show")) showContextReview(info.context_draft);
@@ -1861,6 +1941,7 @@ async function runScan() {
   const logBox = document.getElementById("joblog");
   btn.disabled = true;
   document.getElementById("jobterm").classList.add("show");
+  renderScannerProgress(scanners.map(name => ({ name, status: "pending" })));
   logBox.textContent = "Starting scan…\\n";
   let job;
   try {

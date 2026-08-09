@@ -48,7 +48,8 @@ def test_validate_scanner():
 def test_build_scan_argv_is_a_safe_list(tmp_path):
     argv = triage_ui.build_scan_argv("/repo/main.py", tmp_path, "example.com", "all")
     assert isinstance(argv, list)
-    assert argv[2:] == [
+    assert argv[1] == "-u"  # unbuffered stdout, so the live job log isn't delayed
+    assert argv[3:] == [
         "--target", "example.com", "--scanner", "all",
         "--ai-analysis-limit", "25", "--data-dir", str(tmp_path),
         "--apply-annotations",
@@ -377,3 +378,41 @@ def test_job_manager_serializes_one_scan(tmp_path):
     assert mgr.get(jid)["status"] == "running"
     with pytest.raises(RuntimeError):
         mgr.start(["sleep", "5"], cwd=tmp_path, target="example.com", scanner="all", now=0.0)
+
+
+def test_derive_scanner_progress_tracks_pending_running_success_failed():
+    log = [
+        "[*] Running nmap scan against example.com...",
+        "[+] Raw output saved to: data/example_com/20260101_000000/raw/nmap_example.com_20260101-000010.json",
+        "[*] Running nuclei scan against example.com...",
+    ]
+    progress = triage_ui._derive_scanner_progress(["nmap", "nuclei", "wapiti"], log, "running")
+    assert progress == [
+        {"name": "nmap", "status": "success"},
+        {"name": "nuclei", "status": "running"},
+        {"name": "wapiti", "status": "pending"},
+    ]
+
+
+def test_derive_scanner_progress_marks_unfinished_as_failed_once_job_ends():
+    log = [
+        "[*] Running nmap scan against example.com...",
+        "[+] Raw output saved to: data/example_com/20260101_000000/raw/nmap_example.com_20260101-000010.json",
+    ]
+    progress = triage_ui._derive_scanner_progress(["nmap", "wapiti"], log, "success")
+    assert progress == [
+        {"name": "nmap", "status": "success"},
+        {"name": "wapiti", "status": "failed"},
+    ]
+
+
+def test_derive_scanner_progress_empty_without_known_scanners():
+    assert triage_ui._derive_scanner_progress([], ["[*] Running nmap scan against x..."], "running") == []
+
+
+def test_job_get_includes_scanner_progress(tmp_path):
+    mgr = triage_ui.JobManager(tmp_path)
+    jid = mgr.start(["sleep", "5"], cwd=tmp_path, target="example.com", scanner="all", now=0.0)
+    mgr._jobs[jid].scanners = ["nmap"]
+    mgr._jobs[jid].log.append("[*] Running nmap scan against example.com...")
+    assert mgr.get(jid)["scanner_progress"] == [{"name": "nmap", "status": "running"}]

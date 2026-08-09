@@ -324,6 +324,14 @@ class JobManager:
         self._lock = threading.Lock()
         self._running: Optional[str] = None
         self._counter = 0
+        # Lets the UI resume showing progress for a project's most recent job
+        # after a page reload, since job state otherwise lives only in the
+        # browser's in-memory JS state.
+        self._last_job_by_project: Dict[str, str] = {}
+
+    def get_last_job_id(self, project_id: str) -> Optional[str]:
+        with self._lock:
+            return self._last_job_by_project.get(project_id)
 
     def start(self, argv: List[str], cwd: Union[str, Path], target: str, scanner: str, *, now: float) -> str:
         with self._lock:
@@ -399,6 +407,7 @@ class JobManager:
             )
             self._jobs[job.id] = job
             self._running = job.id
+            self._last_job_by_project[project["project_id"]] = job.id
         threading.Thread(
             target=self._run_project,
             args=(job, cwd, reviewer),
@@ -662,6 +671,8 @@ def create_app(
     @app.get("/api/projects", dependencies=[Depends(require_auth)])
     async def api_projects():
         projects = list_projects(data_dir)
+        for project in projects:
+            project["last_job_id"] = jobs.get_last_job_id(project["project_id"])
         known_targets = {item["target"] for item in projects}
         for site in list_sites(data_dir):
             target = str(site.get("target") or "")
@@ -684,6 +695,7 @@ def create_app(
                 "slug": site.get("slug"),
                 "has_context": has_context,
                 "legacy": True,
+                "last_job_id": jobs.get_last_job_id(site_bundle_key(target)),
             })
         return JSONResponse({"projects": projects})
 
@@ -1602,6 +1614,21 @@ function selectProject(project) {
     el("strong", { text: project.name }),
     el("span", { class: "muted asset", text: project.target }),
   ]));
+  resumeJobIfRunning(project);
+}
+
+// A scan's progress otherwise lives only in the browser's in-memory JS
+// state, so reloading the page while a scan runs looked like nothing was
+// happening even though the server kept working. Reconnect to the
+// project's last job if the server says it is still running.
+async function resumeJobIfRunning(project) {
+  if (!project.last_job_id) return;
+  let info;
+  try { info = await api("/api/jobs/" + encodeURIComponent(project.last_job_id)); }
+  catch (e) { return; }
+  if (info.status === "running") {
+    beginJobPolling(project.last_job_id, { btn: document.getElementById("runBtn") });
+  }
 }
 
 async function loadProjects() {
@@ -1796,39 +1823,51 @@ function renderFinding(f) {
 }
 
 let pollTimer = null;
-async function runScan() {
-  if (!currentProject) { toast("Select a project first.", true); return; }
-  const scanners = Array.from(document.querySelectorAll('#scannerChecks input:checked')).map(n => n.value);
-  if (!scanners.length) { toast("Select at least one scanner.", true); return; }
-  if (!document.getElementById("authorized").checked) { toast("Confirm scan authorization first.", true); return; }
-  const btn = document.getElementById("runBtn");
+
+// Shared by a freshly-started scan and by resumeJobIfRunning() reconnecting
+// to an already-running job after a page reload.
+function beginJobPolling(jobId, opts) {
+  opts = opts || {};
+  const btn = opts.btn || null;
   const term = document.getElementById("jobterm");
   const logBox = document.getElementById("joblog");
-  btn.disabled = true;
   term.classList.add("show");
-  logBox.textContent = "Starting scan…\\n";
-  let job;
-  try {
-    job = await api("/api/projects/" + encodeURIComponent(currentProject.project_id) + "/scan", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ scanners, ai_analysis_limit: Number(document.getElementById("aiLimit").value), authorization_confirmed: true }) });
-  } catch (e) { toast("Could not start: " + e.message, true); btn.disabled = false; return; }
-  currentJob = job.job_id;
+  if (btn) btn.disabled = true;
+  currentJob = jobId;
   if (pollTimer) clearInterval(pollTimer);
   pollTimer = setInterval(async () => {
     let info;
-    try { info = await api("/api/jobs/" + encodeURIComponent(job.job_id)); }
+    try { info = await api("/api/jobs/" + encodeURIComponent(jobId)); }
     catch (e) { return; }
     logBox.textContent = info.log.join("\\n");
     logBox.scrollTop = logBox.scrollHeight;
     if (info.phase === "awaiting_context_review" && info.context_draft && !document.getElementById("contextModal").classList.contains("show")) showContextReview(info.context_draft);
     if (info.status !== "running") {
-      clearInterval(pollTimer); pollTimer = null; btn.disabled = false;
+      clearInterval(pollTimer); pollTimer = null; if (btn) btn.disabled = false;
       toast("Scan " + info.status + (info.returncode != null ? " (exit " + info.returncode + ")" : ""), info.status !== "success");
       document.getElementById("contextModal").classList.remove("show");
       await loadProjects();
       if (info.artifact) selectScan(info.artifact.slug, info.artifact.ts, null);
     }
   }, 1500);
+}
+
+async function runScan() {
+  if (!currentProject) { toast("Select a project first.", true); return; }
+  const scanners = Array.from(document.querySelectorAll('#scannerChecks input:checked')).map(n => n.value);
+  if (!scanners.length) { toast("Select at least one scanner.", true); return; }
+  if (!document.getElementById("authorized").checked) { toast("Confirm scan authorization first.", true); return; }
+  const btn = document.getElementById("runBtn");
+  const logBox = document.getElementById("joblog");
+  btn.disabled = true;
+  document.getElementById("jobterm").classList.add("show");
+  logBox.textContent = "Starting scan…\\n";
+  let job;
+  try {
+    job = await api("/api/projects/" + encodeURIComponent(currentProject.project_id) + "/scan", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ scanners, ai_analysis_limit: Number(document.getElementById("aiLimit").value), authorization_confirmed: true }) });
+  } catch (e) { toast("Could not start: " + e.message, true); btn.disabled = false; return; }
+  beginJobPolling(job.job_id, { btn });
 }
 
 function boolValue(id) { const v = document.getElementById(id).value; return v === "unknown" ? null : v === "true"; }

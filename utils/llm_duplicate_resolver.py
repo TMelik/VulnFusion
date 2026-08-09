@@ -49,6 +49,11 @@ RETRYABLE_PROVIDER_STATUS_CODES = {429, 500, 502, 503, 504}
 PROVIDER_MAX_RETRIES = 2
 PROVIDER_RETRY_BACKOFF_BASE_SECONDS = 0.25
 PROVIDER_RETRY_BACKOFF_CAP_SECONDS = 2.0
+# Rate-limit windows (429) typically need several seconds to clear, unlike
+# transient 5xx/timeout errors — the generic backoff above gives up in well
+# under a second, which is too short to ever recover from real throttling.
+PROVIDER_RATE_LIMIT_BACKOFF_BASE_SECONDS = 2.0
+PROVIDER_RATE_LIMIT_BACKOFF_CAP_SECONDS = 15.0
 # After two live 5xx/provider-unavailable failures in one run, stop spending
 # more duplicate-comparison calls on a provider that appears broadly unhealthy.
 PROVIDER_UNAVAILABLE_DISABLE_THRESHOLD = 2
@@ -1785,8 +1790,16 @@ class OpenAICompatibleLLMClient:
             retry_backoff_seconds=list(retry_backoff_seconds),
         )
 
-    def _retry_delay_seconds(self, attempt_count: int) -> float:
-        """Return exponential backoff delay for a retry attempt."""
+    def _retry_delay_seconds(self, attempt_count: int, category: str = "") -> float:
+        """Return exponential backoff delay for a retry attempt.
+
+        Rate-limited (429) failures get a much longer backoff than generic
+        transient errors, since a rate-limit window rarely clears in under a
+        second.
+        """
+        if category == "rate_limited":
+            delay = PROVIDER_RATE_LIMIT_BACKOFF_BASE_SECONDS * (2 ** max(attempt_count - 1, 0))
+            return min(delay, PROVIDER_RATE_LIMIT_BACKOFF_CAP_SECONDS)
         delay = PROVIDER_RETRY_BACKOFF_BASE_SECONDS * (2 ** max(attempt_count - 1, 0))
         return min(delay, PROVIDER_RETRY_BACKOFF_CAP_SECONDS)
 
@@ -1854,7 +1867,7 @@ class OpenAICompatibleLLMClient:
                         _json_text(provider_error.request_preview),
                     )
                 if provider_error.retryable and attempt_count < max_attempts:
-                    delay = self._retry_delay_seconds(attempt_count)
+                    delay = self._retry_delay_seconds(attempt_count, provider_error.category)
                     retry_backoff_seconds.append(delay)
                     time.sleep(delay)
                     continue

@@ -996,9 +996,10 @@ class LLMFindingAnalyzer:
                 finding["ai_analysis_status"] = "unavailable"
                 unavailable_count += 1
                 logger.warning(
-                    "Structured AI finding analysis unavailable for %s (%s)",
+                    "Structured AI finding analysis unavailable for %s (%s): %s",
                     stable_finding_key,
                     type(exc).__name__,
+                    exc,
                 )
                 continue
 

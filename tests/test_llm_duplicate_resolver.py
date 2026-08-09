@@ -2297,7 +2297,9 @@ def test_429_is_retried_with_bounded_backoff_and_later_pairs_are_skipped(monkeyp
     results = resolver.apply({"all_findings": _same_target_triplet(), "summary": {}})
 
     assert len(http_calls) == 4
-    assert sleep_delays == [0.25, 0.5]
+    # Rate-limited (429) retries use a longer, dedicated backoff than generic
+    # transient errors — a rate-limit window rarely clears in under a second.
+    assert sleep_delays == [2.0, 4.0]
     assert len(results["all_findings"]) == 3
 
     first, second, third = results["llm_duplicate_comparisons"]
@@ -2305,7 +2307,7 @@ def test_429_is_retried_with_bounded_backoff_and_later_pairs_are_skipped(monkeyp
     assert first["provider_failure_category"] == "rate_limited"
     assert first["http_status_code"] == 429
     assert first["provider_attempt_count"] == 3
-    assert first["provider_retry_backoff_seconds"] == [0.25, 0.5]
+    assert first["provider_retry_backoff_seconds"] == [2.0, 4.0]
     assert first["response_payload"]["provider_error"]["attempt_count"] == 3
     assert second["comparison_status"] == "skipped_rate_limited"
     assert second["provider_failure_category"] == "rate_limited"

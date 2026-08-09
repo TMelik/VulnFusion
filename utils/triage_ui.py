@@ -1806,7 +1806,7 @@ async function runScan() {
   const logBox = document.getElementById("joblog");
   btn.disabled = true;
   term.classList.add("show");
-  logBox.textContent = "Starting scan…\n";
+  logBox.textContent = "Starting scan…\\n";
   let job;
   try {
     job = await api("/api/projects/" + encodeURIComponent(currentProject.project_id) + "/scan", { method: "POST", headers: { "Content-Type": "application/json" },
@@ -1818,7 +1818,7 @@ async function runScan() {
     let info;
     try { info = await api("/api/jobs/" + encodeURIComponent(job.job_id)); }
     catch (e) { return; }
-    logBox.textContent = info.log.join("\n");
+    logBox.textContent = info.log.join("\\n");
     logBox.scrollTop = logBox.scrollHeight;
     if (info.phase === "awaiting_context_review" && info.context_draft && !document.getElementById("contextModal").classList.contains("show")) showContextReview(info.context_draft);
     if (info.status !== "running") {
@@ -1835,7 +1835,7 @@ function boolValue(id) { const v = document.getElementById(id).value; return v =
 function showContextReview(draft) {
   const analysis = draft.analysis || {}; const risk = analysis.risk_context || {};
   document.getElementById("contextDescription").value = analysis.site_description || "";
-  document.getElementById("contextProcesses").value = (analysis.business_processes || []).join("\n");
+  document.getElementById("contextProcesses").value = (analysis.business_processes || []).join("\\n");
   document.getElementById("contextCriticality").value = risk.asset_criticality || "unknown";
   document.getElementById("contextEnvironment").value = risk.environment || "unknown";
   document.getElementById("contextSensitive").value = risk.sensitive_data == null ? "unknown" : String(risk.sensitive_data);
@@ -1858,7 +1858,7 @@ async function submitContext(action) {
       const available = [].concat(draft.pages || [], draft.osint || []).map(item => item.id).filter(Boolean);
       const cited = (proposed.evidence_ids || []).filter(id => available.includes(id));
       body.description = document.getElementById("contextDescription").value;
-      body.business_processes = document.getElementById("contextProcesses").value.split("\n").map(s => s.trim()).filter(Boolean);
+      body.business_processes = document.getElementById("contextProcesses").value.split("\\n").map(s => s.trim()).filter(Boolean);
       body.risk_context = {
         asset_criticality: document.getElementById("contextCriticality").value,
         environment: document.getElementById("contextEnvironment").value,

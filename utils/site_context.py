@@ -668,6 +668,12 @@ def build_context_llm_request(
         "model": model_name,
         "temperature": 0,
         "max_completion_tokens": 550,
+        # Reasoning-capable models (e.g. via OpenRouter) can otherwise spend
+        # the entire completion budget on hidden reasoning tokens and return
+        # an empty final answer (finish_reason="length", content=null) for
+        # this small structured-JSON request. OpenAI-compatible servers that
+        # don't recognize this field ignore unknown top-level request keys.
+        "reasoning": {"enabled": False},
         "messages": [
             {
                 "role": "system",

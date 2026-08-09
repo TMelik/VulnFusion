@@ -9,6 +9,7 @@ import main
 import yaml
 
 from utils.site_context import (
+    DEFAULT_MAX_PAGE_BYTES,
     SiteContextConfig,
     analyze_site_context,
     collect_local_osint,
@@ -96,7 +97,7 @@ def test_crawl_is_bounded_and_same_site_only():
 
 def test_crawl_enforces_hard_byte_text_bounds_and_accepts_explicit_default_port():
     requested = []
-    oversized = b"<html><body>" + (b"A" * (300 * 1024))
+    oversized = b"<html><body>" + (b"A" * (DEFAULT_MAX_PAGE_BYTES + 300 * 1024))
 
     def handler(request: httpx.Request) -> httpx.Response:
         requested.append(str(request.url))
@@ -106,7 +107,9 @@ def test_crawl_enforces_hard_byte_text_bounds_and_accepts_explicit_default_port(
 
     pages = crawl_site(
         "https://example.com",
-        config=SiteContextConfig(max_pages=999, max_page_bytes=999999, max_text_chars=999999),
+        # A generous config value must still be clamped by the hard ceiling
+        # (DEFAULT_MAX_PAGE_BYTES), regardless of how large the caller asks for.
+        config=SiteContextConfig(max_pages=999, max_page_bytes=DEFAULT_MAX_PAGE_BYTES * 10, max_text_chars=999999),
         transport=httpx.MockTransport(handler),
         now=_now,
     )
@@ -114,7 +117,7 @@ def test_crawl_enforces_hard_byte_text_bounds_and_accepts_explicit_default_port(
     assert requested == ["https://example.com/", "https://example.com/about"]
     assert len(pages) == 1
     assert len(pages[0]["text"]) == 6000
-    assert pages[0]["content_sha256"] == hashlib.sha256(oversized[: 256 * 1024]).hexdigest()
+    assert pages[0]["content_sha256"] == hashlib.sha256(oversized[:DEFAULT_MAX_PAGE_BYTES]).hexdigest()
 
 
 def test_bare_target_falls_back_from_unavailable_https_to_http():

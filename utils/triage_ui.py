@@ -967,122 +967,531 @@ _SPA_TEMPLATE = """<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>VulnFusion — Projects &amp; Scans</title>
 <style>
-  :root { color-scheme: dark; }
+  :root {
+    color-scheme: dark;
+    --bg-primary: #0a0e1a;
+    --bg-secondary: #111827;
+    --bg-tertiary: #1f2937;
+    --bg-hover: #374151;
+    --text-primary: #f9fafb;
+    --text-secondary: #d1d5db;
+    --text-muted: #9ca3af;
+    --border: #374151;
+    --accent: #3b82f6;
+    --accent-soft: rgba(59, 130, 246, 0.14);
+    --accent-glow: 0 0 0 3px rgba(59, 130, 246, 0.18);
+    --card-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3), 0 2px 4px -1px rgba(0, 0, 0, 0.2);
+    --sev-critical: #dc2626;
+    --sev-high: #ea580c;
+    --sev-medium: #ca8a04;
+    --sev-low: #2563eb;
+    --sev-info: #6b7280;
+    --ok: #16a34a;
+    --danger: #dc2626;
+    --warning: #ca8a04;
+    --mono: "JetBrains Mono", ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+    --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --r-sm: 3px;
+    --r: 5px;
+    --r-lg: 7px;
+  }
   * { box-sizing: border-box; }
-  body { margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-         background: #0b1020; color: #e5e7eb; }
-  header { padding: 1rem 1.25rem; background: #111827; border-bottom: 1px solid #1f2937;
-           display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; }
-  header h1 { font-size: 1.05rem; margin: 0; font-weight: 700; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    font-family: var(--mono);
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    font-size: 13px;
+    line-height: 1.5;
+    position: relative;
+  }
+  /* subtle scanline + grid texture — decorative only, kept low-contrast */
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 0;
+    background-image:
+      repeating-linear-gradient(0deg, rgba(255,255,255,0.025) 0px, rgba(255,255,255,0.025) 1px, transparent 1px, transparent 3px),
+      linear-gradient(180deg, rgba(59,130,246,0.05), transparent 40%);
+    mix-blend-mode: overlay;
+  }
+  a { color: var(--accent); }
+
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: var(--bg-primary); }
+  ::-webkit-scrollbar-thumb { background: var(--bg-tertiary); border-radius: var(--r-sm); border: 2px solid var(--bg-primary); }
+  ::-webkit-scrollbar-thumb:hover { background: var(--bg-hover); }
+
+  h1, h2, h3, strong, label, button, select { font-family: var(--mono); }
+  input, textarea { font-family: var(--mono); }
+  .prose { font-family: var(--sans); }
+
+  /* ---------- header ---------- */
+  header {
+    position: relative;
+    z-index: 1;
+    padding: 0.7rem 1.1rem;
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    gap: 1rem;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  .brand { display: flex; align-items: center; gap: 0.5rem; }
+  .brand svg { color: var(--accent); flex-shrink: 0; }
+  .brand h1 {
+    font-size: 0.85rem;
+    margin: 0;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--text-primary);
+  }
+  .brand .sub { color: var(--text-muted); font-size: 0.72rem; letter-spacing: 0.03em; }
+  .live-dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: var(--ok);
+    box-shadow: 0 0 0 3px rgba(22,163,74,0.18);
+    display: inline-block;
+    animation: pulse-dot 2.4s ease-in-out infinite;
+  }
+  @keyframes pulse-dot { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
   header .spacer { flex: 1; }
   .runbar { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
-  input, select, textarea, button { font: inherit; }
-  input, select, textarea { background: #0b1020; color: #e5e7eb; border: 1px solid #374151;
-           border-radius: 0.4rem; padding: 0.4rem 0.55rem; }
-  button { background: #4f46e5; color: #fff; border: 0; border-radius: 0.4rem;
-           padding: 0.45rem 0.8rem; cursor: pointer; }
-  button.secondary { background: #374151; }
-  button:disabled { opacity: 0.5; cursor: not-allowed; }
-  .layout { display: grid; grid-template-columns: 300px 1fr; min-height: calc(100vh - 60px); }
-  .sidebar { border-right: 1px solid #1f2937; padding: 0.75rem; overflow-y: auto; max-height: calc(100vh - 60px); }
-  .main { padding: 1rem 1.25rem; overflow-y: auto; max-height: calc(100vh - 60px); }
-  .site { margin-bottom: 0.5rem; }
-  .site-name { font-weight: 700; font-size: 0.85rem; color: #93c5fd; word-break: break-all; }
-  .scan { padding: 0.3rem 0.5rem; margin: 0.15rem 0; border-radius: 0.35rem; cursor: pointer;
-          font-size: 0.8rem; color: #cbd5e1; border: 1px solid transparent; }
-  .scan:hover { background: #1f2937; }
-  .scan.active { background: #1e293b; border-color: #4f46e5; }
-  .muted { color: #94a3b8; font-size: 0.85rem; }
-  .finding { border: 1px solid #1f2937; border-radius: 0.6rem; padding: 0.85rem; margin-bottom: 0.8rem;
-             background: #0f172a; }
-  .finding-top { display: flex; gap: 0.5rem; align-items: baseline; flex-wrap: wrap; }
-  .finding-name { font-weight: 700; }
-  .badge { font-size: 0.72rem; padding: 0.12rem 0.45rem; border-radius: 999px; border: 1px solid #374151; }
-  .sev-critical { background: #7f1d1d; } .sev-high { background: #9a3412; }
-  .sev-medium { background: #854d0e; } .sev-low { background: #1e40af; } .sev-info { background: #334155; }
-  .asset { font-family: ui-monospace, Menlo, monospace; color: #a5b4fc; font-size: 0.8rem; word-break: break-all; }
-  .triage-now { font-size: 0.8rem; margin: 0.4rem 0; }
-  .t-false_positive, .t-not_applicable { color: #94a3b8; }
+
+  /* ---------- form controls ---------- */
+  input, select, textarea, button { font: inherit; color: var(--text-primary); }
+  input, select, textarea {
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    border: 1px solid var(--border);
+    border-radius: var(--r-sm);
+    padding: 0.4rem 0.55rem;
+    transition: border-color 0.15s, box-shadow 0.15s;
+  }
+  input::placeholder, textarea::placeholder { color: var(--text-muted); }
+  input:focus, select:focus, textarea:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: var(--accent-glow);
+  }
+  select { cursor: pointer; }
+  textarea { resize: vertical; font-family: var(--sans); }
+
+  button {
+    background: var(--accent);
+    color: #fff;
+    border: 0;
+    border-radius: var(--r-sm);
+    padding: 0.45rem 0.85rem;
+    cursor: pointer;
+    font-weight: 600;
+    font-size: 0.8rem;
+    letter-spacing: 0.02em;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    transition: background 0.15s, box-shadow 0.15s, transform 0.05s;
+  }
+  button:hover:not(:disabled) { background: #2f6fe0; }
+  button:active:not(:disabled) { transform: translateY(1px); }
+  button.secondary { background: var(--bg-tertiary); color: var(--text-secondary); }
+  button.secondary:hover:not(:disabled) { background: var(--bg-hover); color: var(--text-primary); }
+  button.danger { background: transparent; color: var(--text-muted); border: 1px solid var(--border); }
+  button.danger:hover:not(:disabled) { border-color: var(--danger); color: #fca5a5; }
+  button.ghost { background: transparent; color: var(--text-muted); padding: 0.25rem 0.5rem; font-size: 0.72rem; }
+  button.ghost:hover:not(:disabled) { color: var(--text-primary); background: var(--bg-tertiary); }
+  button.icon-only { padding: 0.4rem; }
+  button:disabled { opacity: 0.45; cursor: not-allowed; }
+  button svg { flex-shrink: 0; }
+
+  /* ---------- layout ---------- */
+  .layout {
+    position: relative;
+    z-index: 1;
+    display: grid;
+    grid-template-columns: 320px 1fr;
+    min-height: calc(100vh - 53px);
+  }
+  .sidebar {
+    border-right: 1px solid var(--border);
+    padding: 0.75rem;
+    overflow-y: auto;
+    max-height: calc(100vh - 53px);
+    background: var(--bg-secondary);
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+  }
+  .main { padding: 0.9rem 1.15rem; overflow-y: auto; max-height: calc(100vh - 53px); }
+  .sidebar-head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0.1rem 0.1rem 0.3rem;
+  }
+  .sidebar-head .label {
+    font-size: 0.68rem; font-weight: 700; letter-spacing: 0.08em;
+    color: var(--text-muted); text-transform: uppercase;
+  }
+
+  /* ---------- generic helpers ---------- */
+  .muted { color: var(--text-muted); font-size: 0.8rem; }
+  .row { display: flex; align-items: center; gap: 0.4rem; }
+  .panel {
+    border: 1px solid var(--border); border-radius: var(--r-lg);
+    padding: 0.7rem; background: var(--bg-secondary);
+  }
+  .empty-state, .loading-state {
+    display: flex; flex-direction: column; align-items: center; gap: 0.5rem;
+    padding: 1.4rem 0.8rem; text-align: center; color: var(--text-muted);
+    border: 1px dashed var(--border); border-radius: var(--r-lg);
+    font-size: 0.78rem;
+  }
+  .empty-state svg, .loading-state svg { color: var(--text-muted); opacity: 0.7; }
+  .spinner { animation: spin 0.9s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .hero { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 0.75rem;
+    color: var(--text-muted); padding: 4.5rem 1rem; }
+  .hero svg { width: 2.6rem; height: 2.6rem; color: var(--accent); opacity: 0.85; }
+  .hero .title { font-size: 1rem; font-weight: 700; color: var(--text-primary); letter-spacing: 0.02em; }
+
+  /* ---------- sidebar: project/scan tree ---------- */
+  #projects { display: flex; flex-direction: column; gap: 0.3rem; }
+  .site {
+    border: 1px solid transparent; border-radius: var(--r);
+    padding: 0.15rem;
+  }
+  .site.active-project { border-color: var(--border); background: var(--bg-tertiary); }
+  .site-name {
+    font-weight: 700; font-size: 0.8rem; color: var(--text-primary);
+    word-break: break-all; cursor: pointer; padding: 0.4rem 0.5rem;
+    border-radius: var(--r-sm); display: flex; align-items: center; gap: 0.4rem;
+  }
+  .site-name:hover { background: var(--bg-hover); }
+  .site-name .target { color: var(--text-muted); font-weight: 400; font-size: 0.72rem; }
+  .scan-list { padding-left: 0.55rem; border-left: 1px solid var(--border); margin: 0.15rem 0 0.35rem 0.85rem; }
+  .scan {
+    padding: 0.28rem 0.5rem; margin: 0.1rem 0; border-radius: var(--r-sm); cursor: pointer;
+    font-size: 0.74rem; color: var(--text-secondary); border: 1px solid transparent;
+    display: flex; align-items: center; gap: 0.4rem; white-space: nowrap; overflow: hidden;
+  }
+  .scan .ts { color: var(--text-muted); }
+  .scan:hover { background: var(--bg-tertiary); }
+  .scan.active { background: var(--accent-soft); border-color: var(--accent); color: var(--text-primary); }
+
+  /* ---------- scan config panel ---------- */
+  #scanPanel .panel-title {
+    font-size: 0.7rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--text-muted); margin: 0 0 0.5rem;
+  }
+  .scanner-grid { display: flex; gap: 0.4rem; flex-wrap: wrap; margin: 0.4rem 0 0.65rem; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 0.35rem;
+    border: 1px solid var(--border); border-radius: var(--r-sm);
+    padding: 0.3rem 0.55rem; font-size: 0.75rem; color: var(--text-secondary);
+    cursor: pointer; background: var(--bg-primary); user-select: none;
+    transition: border-color 0.15s, color 0.15s, background 0.15s;
+  }
+  .chip input { position: absolute; opacity: 0; width: 0; height: 0; }
+  .chip:hover { border-color: var(--bg-hover); }
+  .chip.checked { border-color: var(--accent); color: var(--text-primary); background: var(--accent-soft); }
+  .chip .dot { width: 6px; height: 6px; border-radius: 1px; background: var(--border); }
+  .chip.checked .dot { background: var(--accent); }
+  .preset-row { display: flex; gap: 0.4rem; margin-bottom: 0.65rem; }
+  .field-row { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; margin: 0.5rem 0; }
+  .field-row label { font-size: 0.75rem; color: var(--text-muted); }
+  .field-row input[type="number"] { width: 4.5rem; text-align: center; }
+
+  /* ---------- authorization gate (deliberately loud — a safety control) ---------- */
+  .auth-gate {
+    display: flex; gap: 0.55rem; align-items: flex-start;
+    background: rgba(202, 138, 4, 0.1); border: 1px solid rgba(202, 138, 4, 0.4);
+    border-radius: var(--r); padding: 0.6rem 0.65rem; margin: 0.6rem 0;
+  }
+  .auth-gate svg { width: 1.05rem; height: 1.05rem; color: var(--warning); margin-top: 0.05rem; flex-shrink: 0; }
+  .auth-gate label { display: flex; gap: 0.5rem; align-items: flex-start; font-size: 0.74rem;
+    color: var(--text-secondary); cursor: pointer; }
+  .auth-gate input { margin-top: 0.15rem; accent-color: var(--warning); }
+  #runBtn { width: 100%; justify-content: center; box-shadow: 0 0 0 0 transparent; }
+  #runBtn:not(:disabled):hover { box-shadow: 0 0 12px rgba(59,130,246,0.35); }
+
+  /* ---------- job log (terminal) ---------- */
+  .term {
+    display: none; border: 1px solid var(--border); border-radius: var(--r-lg);
+    overflow: hidden; background: #05070d; margin-top: 0.2rem;
+  }
+  .term.show { display: block; }
+  .term-bar {
+    display: flex; align-items: center; gap: 0.4rem; padding: 0.35rem 0.6rem;
+    background: var(--bg-tertiary); border-bottom: 1px solid var(--border);
+    font-size: 0.68rem; color: var(--text-muted); letter-spacing: 0.03em;
+  }
+  .term-bar .tl { width: 8px; height: 8px; border-radius: 50%; background: var(--border); }
+  #joblog {
+    white-space: pre-wrap; font-family: var(--mono); font-size: 0.72rem;
+    color: #9ae6b4; padding: 0.6rem 0.7rem; max-height: 220px; overflow: auto;
+  }
+
+  /* ---------- main header / dashboard ---------- */
+  #scanHeader { margin-bottom: 0.8rem; }
+  #scanHeader .title-row { display: flex; align-items: baseline; gap: 0.6rem; flex-wrap: wrap; }
+  #scanHeader strong { font-size: 1rem; color: var(--text-primary); word-break: break-all; }
+
+  .summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 0.6rem; margin: 0.7rem 0; }
+  .metric {
+    display: flex; align-items: center; gap: 0.7rem;
+    padding: 0.65rem 0.75rem; border: 1px solid var(--border); border-radius: var(--r);
+    background: var(--bg-secondary); border-top: 2px solid var(--accent);
+    box-shadow: var(--card-shadow);
+  }
+  .metric-icon {
+    width: 1.9rem; height: 1.9rem; border-radius: var(--r-sm); background: var(--accent-soft);
+    color: var(--accent); display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+  }
+  .metric strong { display: block; font-size: 1.4rem; line-height: 1.2; color: var(--text-primary); }
+  .metric span { font-size: 0.68rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.06em; }
+
+  .distribution { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 0.6rem; margin: 0.6rem 0 1rem; }
+  .distribution .panel strong {
+    font-size: 0.7rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--text-muted); display: block; margin-bottom: 0.4rem;
+  }
+  .distribution-row { display: grid; grid-template-columns: 6.5rem 1fr 2.2rem; gap: 0.5rem; align-items: center; font-size: 0.75rem; margin: 0.3rem 0; }
+  .distribution-row .dlabel { color: var(--text-secondary); text-transform: capitalize; }
+  .distribution-track { height: 0.4rem; border-radius: var(--r-sm); background: var(--bg-primary); overflow: hidden; border: 1px solid var(--border); }
+  .distribution-fill { height: 100%; background: var(--accent); box-shadow: 0 0 6px rgba(59,130,246,0.5); }
+  .distribution-row .dval { color: var(--text-muted); text-align: right; }
+
+  /* ---------- findings ---------- */
+  #findings { display: flex; flex-direction: column; gap: 0.65rem; }
+  #findings h3.section-title {
+    font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--text-muted); font-weight: 700; margin: 0.2rem 0 0.2rem;
+  }
+  .finding {
+    border: 1px solid var(--border); border-left: 3px solid var(--sev-info);
+    border-radius: var(--r); padding: 0.75rem 0.9rem;
+    background: var(--bg-secondary); box-shadow: var(--card-shadow);
+  }
+  .finding.sev-border-critical { border-left-color: var(--sev-critical); }
+  .finding.sev-border-high { border-left-color: var(--sev-high); }
+  .finding.sev-border-medium { border-left-color: var(--sev-medium); }
+  .finding.sev-border-low { border-left-color: var(--sev-low); }
+  .finding.sev-border-info { border-left-color: var(--sev-info); }
+  .finding-top { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+  .finding-name { font-weight: 700; color: var(--text-primary); font-size: 0.85rem; }
+  .badge {
+    font-family: var(--mono); font-size: 0.66rem; font-weight: 700; letter-spacing: 0.05em;
+    padding: 0.14rem 0.45rem; border-radius: var(--r-sm); border: 1px solid rgba(255,255,255,0.08);
+    color: #fff; text-transform: uppercase; white-space: nowrap;
+  }
+  .badge.neutral { background: var(--bg-tertiary); color: var(--text-secondary); border-color: var(--border); }
+  .badge.ai { background: transparent; color: var(--accent); border: 1px solid var(--accent); display: inline-flex; align-items: center; gap: 0.25rem; }
+  .sev-critical { background: var(--sev-critical); } .sev-high { background: var(--sev-high); }
+  .sev-medium { background: var(--sev-medium); } .sev-low { background: var(--sev-low); } .sev-info { background: var(--sev-info); }
+  .asset {
+    font-family: var(--mono); color: #93c5fd; font-size: 0.76rem; word-break: break-all;
+    margin-top: 0.3rem; background: rgba(59,130,246,0.06); border-radius: var(--r-sm);
+    padding: 0.15rem 0.4rem; display: inline-flex; align-items: center; gap: 0.3rem;
+  }
+  .triage-now { font-size: 0.76rem; margin: 0.5rem 0; display: flex; align-items: center; gap: 0.4rem; }
+  .triage-now svg { width: 0.95rem; height: 0.95rem; flex-shrink: 0; }
+  .t-false_positive, .t-not_applicable { color: var(--text-muted); }
   .t-confirmed { color: #fca5a5; } .t-needs_review { color: #fcd34d; }
-  .controls { display: flex; gap: 0.4rem; align-items: flex-start; flex-wrap: wrap; margin-top: 0.5rem; }
-  .controls textarea { flex: 1; min-width: 220px; min-height: 2.2rem; }
-  .toast { position: fixed; bottom: 1rem; right: 1rem; background: #065f46; color: #fff;
-           padding: 0.6rem 0.9rem; border-radius: 0.5rem; opacity: 0; transition: opacity 0.2s; }
-  .toast.show { opacity: 1; }
-  .toast.err { background: #7f1d1d; }
-  #joblog { white-space: pre-wrap; font-family: ui-monospace, Menlo, monospace; font-size: 0.75rem;
-            background: #020617; border: 1px solid #1f2937; border-radius: 0.5rem; padding: 0.6rem;
-            max-height: 180px; overflow: auto; margin-top: 0.5rem; display: none; }
-  .panel { border:1px solid #1f2937; border-radius:.6rem; padding:.7rem; margin-bottom:.75rem; background:#0f172a; }
-  .scanner-grid { display:flex; gap:.55rem; flex-wrap:wrap; margin:.5rem 0; }
-  .scanner-grid label { font-size:.8rem; }
-  .summary-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(120px,1fr)); gap:.6rem; margin:.8rem 0; }
-  .metric { padding:.7rem; border:1px solid #1f2937; border-radius:.5rem; background:#111827; }
-  .metric strong { display:block; font-size:1.25rem; }
-  .distribution { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:.6rem; margin:.7rem 0; }
-  .distribution-row { display:grid; grid-template-columns:5rem 1fr 2rem; gap:.45rem; align-items:center; font-size:.78rem; margin:.28rem 0; }
-  .distribution-track { height:.45rem; border-radius:999px; background:#1f2937; overflow:hidden; }
-  .distribution-fill { height:100%; background:#6366f1; border-radius:999px; }
-  .source-list { font-size:.78rem; color:#cbd5e1; margin:-.25rem 0 .8rem; word-break:break-all; }
-  .modal { position:fixed; inset:0; background:#020617e8; display:none; align-items:center; justify-content:center; z-index:20; }
-  .modal.show { display:flex; }
-  .modal-card { width:min(760px,94vw); max-height:90vh; overflow:auto; background:#111827; border:1px solid #374151; border-radius:.8rem; padding:1rem; }
-  .form-grid { display:grid; grid-template-columns:1fr 1fr; gap:.6rem; }
-  .form-grid label { display:flex; flex-direction:column; gap:.25rem; }
-  .form-grid .wide { grid-column:1/-1; }
-  @media(max-width:760px) { .layout{grid-template-columns:1fr}.sidebar{max-height:none}.form-grid{grid-template-columns:1fr} }
+  .ai-line { color: var(--text-muted); font-size: 0.76rem; margin: 0.25rem 0; }
+  .ai-line b { color: var(--text-secondary); }
+  .ai-desc { font-family: var(--sans); font-size: 0.82rem; color: var(--text-secondary); margin: 0.4rem 0; line-height: 1.5; }
+
+  .controls { display: flex; gap: 0.6rem; align-items: flex-start; flex-wrap: wrap; margin-top: 0.6rem; padding-top: 0.6rem; border-top: 1px solid var(--border); }
+  .controls .field { display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.7rem; color: var(--text-muted); }
+  .controls .field.grow { flex: 1; min-width: 220px; }
+  .controls select { font-size: 0.78rem; }
+  .controls textarea { min-height: 2.3rem; font-size: 0.78rem; font-family: var(--sans); width: 100%; }
+  .controls .save-row { align-self: flex-end; }
+
+  /* ---------- toast ---------- */
+  .toast {
+    position: fixed; bottom: 1rem; right: 1rem; z-index: 50;
+    background: var(--bg-tertiary); color: var(--text-primary);
+    border: 1px solid var(--ok); border-left: 3px solid var(--ok);
+    padding: 0.55rem 0.9rem; border-radius: var(--r); font-size: 0.8rem;
+    box-shadow: var(--card-shadow); opacity: 0; transform: translateY(6px);
+    transition: opacity 0.2s, transform 0.2s; display: flex; align-items: center; gap: 0.5rem;
+    pointer-events: none;
+  }
+  .toast.show { opacity: 1; transform: translateY(0); }
+  .toast.err { border-color: var(--danger); border-left-color: var(--danger); }
+
+  /* ---------- modals ---------- */
+  .modal {
+    position: fixed; inset: 0; background: rgba(2,6,15,0.82); backdrop-filter: blur(2px);
+    display: none; align-items: center; justify-content: center; z-index: 20; padding: 1rem;
+  }
+  .modal.show { display: flex; }
+  .modal-card {
+    width: min(760px, 96vw); max-height: 90vh; overflow: auto;
+    background: var(--bg-secondary); border: 1px solid var(--border); border-radius: var(--r-lg);
+    box-shadow: var(--card-shadow);
+  }
+  .modal-head {
+    display: flex; align-items: center; gap: 0.5rem; padding: 0.85rem 1.1rem;
+    border-bottom: 1px solid var(--border); background: var(--bg-tertiary);
+  }
+  .modal-head h2 {
+    margin: 0; font-size: 0.82rem; letter-spacing: 0.05em; text-transform: uppercase;
+    color: var(--text-primary); font-weight: 700;
+  }
+  .modal-head svg { color: var(--accent); }
+  .modal-body { padding: 1.1rem; }
+  .modal-sub { color: var(--text-muted); font-size: 0.78rem; margin: -0.3rem 0 0.9rem; }
+  .modal-foot { padding: 0.85rem 1.1rem; border-top: 1px solid var(--border); display: flex; gap: 0.5rem; }
+  .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.7rem; }
+  .form-grid label { display: flex; flex-direction: column; gap: 0.3rem; font-size: 0.75rem; color: var(--text-muted); }
+  .form-grid .wide { grid-column: 1/-1; }
+  .form-grid input, .form-grid select, .form-grid textarea { color: var(--text-primary); }
+  .form-grid textarea { min-height: 3.4rem; font-family: var(--sans); }
+  .source-list {
+    font-size: 0.74rem; color: var(--text-secondary); margin: -0.2rem 0 0.8rem;
+    word-break: break-all; max-height: 6rem; overflow: auto;
+    border: 1px solid var(--border); border-radius: var(--r-sm); padding: 0.4rem 0.55rem;
+    background: var(--bg-primary);
+  }
+  .source-list > div { padding: 0.1rem 0; }
+
+  @media (max-width: 780px) {
+    .layout { grid-template-columns: 1fr; }
+    .sidebar { max-height: none; }
+    .form-grid { grid-template-columns: 1fr; }
+  }
 </style>
 </head>
 <body>
 <header>
-  <h1>VulnFusion · Projects &amp; Scans</h1>
+  <div class="brand">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line></svg>
+    <h1>VulnFusion</h1>
+    <span class="sub">projects &amp; scans</span>
+    <span class="live-dot" title="triage console"></span>
+  </div>
   <div class="spacer"></div>
   <div class="runbar">
     <select id="projectSelect"><option value="">Select project…</option></select>
-    <button class="secondary" id="newProjectBtn">New project</button>
+    <button class="secondary" id="newProjectBtn">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+      New project
+    </button>
   </div>
 </header>
 <div class="layout">
   <aside class="sidebar">
-    <div style="display:flex;align-items:center;gap:.5rem;margin-bottom:.5rem;">
-      <strong style="font-size:.8rem;">Projects</strong>
-      <button class="secondary" id="refreshBtn" style="padding:.2rem .5rem;font-size:.75rem;">Refresh</button>
+    <div class="sidebar-head">
+      <span class="label">Projects</span>
+      <button class="ghost" id="refreshBtn">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
+        Refresh
+      </button>
     </div>
-    <div id="projects"><div class="muted">Loading…</div></div>
+    <div id="projects"><div class="loading-state">Loading projects…</div></div>
     <div class="panel" id="scanPanel" style="display:none">
-      <strong>Scanners</strong><div class="scanner-grid" id="scannerChecks"></div>
-      <button class="secondary" id="safePreset">Safe</button> <button class="secondary" id="fullPreset">Full</button>
-      <p><label class="muted">AI limit <input id="aiLimit" type="number" min="1" max="100" value="25" style="width:5rem"></label></p>
-      <label style="display:block;margin:.6rem 0;font-size:.78rem"><input id="authorized" type="checkbox"> I confirm authorization to scan</label>
-      <button id="runBtn">Run selected scan</button>
+      <div class="panel-title">Scanners</div>
+      <div class="scanner-grid" id="scannerChecks"></div>
+      <div class="preset-row">
+        <button class="secondary" id="safePreset" style="flex:1">Safe</button>
+        <button class="secondary" id="fullPreset" style="flex:1">Full</button>
+      </div>
+      <div class="field-row">
+        <label for="aiLimit">AI analysis limit</label>
+        <input id="aiLimit" type="number" min="1" max="100" value="25">
+      </div>
+      <div class="auth-gate">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4m0 4h.01M10.3 3.9 2.7 17a2 2 0 0 0 1.7 3h15.2a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg>
+        <label><input id="authorized" type="checkbox"> I confirm authorization to scan this target</label>
+      </div>
+      <button id="runBtn">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+        Run selected scan
+      </button>
     </div>
-    <div id="joblog"></div>
+    <div class="term" id="jobterm">
+      <div class="term-bar"><span class="tl"></span><span class="tl"></span><span class="tl"></span>&nbsp;job.log</div>
+      <div id="joblog"></div>
+    </div>
   </aside>
   <main class="main">
-    <div id="scanHeader" class="muted">Select or create a project.</div>
+    <div id="scanHeader">
+      <div class="hero">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 4 5v6c0 5 3.4 8.5 8 11 4.6-2.5 8-6 8-11V5l-8-3z"/><path d="m9 12 2 2 4-4"/></svg>
+        <div class="title">Select or create a project</div>
+        <div class="muted">Pick a project from the sidebar, or start a new one, to view scans and findings.</div>
+      </div>
+    </div>
     <div id="dashboard"></div>
     <div id="findings"></div>
   </main>
 </div>
 <div id="toast" class="toast"></div>
-<div id="projectModal" class="modal"><div class="modal-card">
-  <h2>New project</h2><div class="form-grid">
-  <label>Name<input id="projectName"></label><label>Target<input id="projectTarget" placeholder="https://example.com"></label>
-  <label>AI limit<input id="projectLimit" type="number" min="1" max="100" value="25"></label>
-  <label class="wide"><span><input id="projectAuthorized" type="checkbox"> I confirm authorization to scan this target</span></label></div>
-  <p><button id="createProjectBtn">Create</button> <button class="secondary" id="closeProjectBtn">Cancel</button></p>
-</div></div>
-<div id="contextModal" class="modal"><div class="modal-card">
-  <h2>Review site context</h2><p class="muted" id="contextSources"></p><div class="source-list" id="contextSourceList"></div><div class="form-grid">
-  <label class="wide">Description<textarea id="contextDescription"></textarea></label>
-  <label class="wide">Business processes (one per line)<textarea id="contextProcesses"></textarea></label>
-  <label>Criticality<select id="contextCriticality"><option>unknown</option><option>low</option><option>medium</option><option>high</option></select></label>
-  <label>Environment<select id="contextEnvironment"><option>unknown</option><option>development</option><option>test</option><option>staging</option><option>production</option></select></label>
-  <label>Sensitive data<select id="contextSensitive"><option value="unknown">unknown</option><option value="true">yes</option><option value="false">no</option></select></label>
-  <label>Authentication<select id="contextAuth"><option value="unknown">unknown</option><option value="true">required</option><option value="false">not required</option></select></label>
-  <label class="wide">Reason<textarea id="contextReason"></textarea></label></div>
-  <p><button id="acceptContextBtn">Accept & continue</button> <button class="secondary" id="skipContextBtn">Continue without context</button> <button class="secondary" id="cancelJobBtn">Cancel scan</button></p>
-</div></div>
+
+<div id="projectModal" class="modal">
+  <div class="modal-card">
+    <div class="modal-head">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+      <h2>New project</h2>
+    </div>
+    <div class="modal-body">
+      <p class="modal-sub">Projects group scans of the same target so triage decisions persist across re-scans.</p>
+      <div class="form-grid">
+        <label class="wide">Name<input id="projectName" placeholder="e.g. Marketing site"></label>
+        <label class="wide">Target<input id="projectTarget" placeholder="https://example.com"></label>
+        <label>AI limit<input id="projectLimit" type="number" min="1" max="100" value="25"></label>
+      </div>
+      <div class="auth-gate" style="margin-top:1rem">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4m0 4h.01M10.3 3.9 2.7 17a2 2 0 0 0 1.7 3h15.2a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg>
+        <label><input id="projectAuthorized" type="checkbox"> I confirm authorization to scan this target</label>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button id="createProjectBtn">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+        Create
+      </button>
+      <button class="secondary" id="closeProjectBtn">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<div id="contextModal" class="modal">
+  <div class="modal-card">
+    <div class="modal-head">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>
+      <h2>Review site context</h2>
+    </div>
+    <div class="modal-body">
+      <p class="modal-sub" id="contextSources">—</p>
+      <div class="source-list" id="contextSourceList"></div>
+      <div class="form-grid">
+        <label class="wide">Description<textarea id="contextDescription"></textarea></label>
+        <label class="wide">Business processes (one per line)<textarea id="contextProcesses"></textarea></label>
+        <label>Criticality<select id="contextCriticality"><option>unknown</option><option>low</option><option>medium</option><option>high</option></select></label>
+        <label>Environment<select id="contextEnvironment"><option>unknown</option><option>development</option><option>test</option><option>staging</option><option>production</option></select></label>
+        <label>Sensitive data<select id="contextSensitive"><option value="unknown">unknown</option><option value="true">yes</option><option value="false">no</option></select></label>
+        <label>Authentication<select id="contextAuth"><option value="unknown">unknown</option><option value="true">required</option><option value="false">not required</option></select></label>
+        <label class="wide">Reason<textarea id="contextReason"></textarea></label>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button id="acceptContextBtn">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+        Accept &amp; continue
+      </button>
+      <button class="secondary" id="skipContextBtn">Continue without context</button>
+      <button class="danger" id="cancelJobBtn">Cancel scan</button>
+    </div>
+  </div>
+</div>
+
 <script>
 const TOKEN = "__TRIAGE_TOKEN__";
 const STATUSES = __STATUSES__;
@@ -1090,6 +1499,36 @@ const SCOPES = __SCOPES__;
 const SCANNERS = __SCANNERS__;
 const STATUS_LABELS = { confirmed: "Confirmed", false_positive: "False positive",
   not_applicable: "Not applicable", needs_review: "Needs review" };
+
+// Minimal inline-icon inventory. Purely cosmetic — no icon fonts, no CDNs,
+// no emoji. Additive helper: does not replace or rename any existing wiring.
+const ICONS = {
+  target: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4"/><circle cx="12" cy="12" r=".5"/>',
+  bot: '<rect x="4" y="9" width="16" height="11" rx="2"/><path d="M12 9V5m-4 0h8M9 14h.01M15 14h.01"/>',
+  alert: '<path d="M12 9v4m0 4h.01M10.3 3.9 2.7 17a2 2 0 0 0 1.7 3h15.2a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/>',
+  scale: '<path d="M12 3v18M5 7l-3 7a4 4 0 0 0 6 0zM19 7l-3 7a4 4 0 0 0 6 0zM5 7h14M9 21h6"/>',
+  check: '<polyline points="20 6 9 17 4 12"/>',
+  x: '<path d="M18 6 6 18M6 6l12 12"/>',
+  minus: '<path d="M5 12h14"/>',
+  dot: '<circle cx="12" cy="12" r="3"/>',
+  asset: '<path d="M4 4h16v16H4z"/><path d="M9 9h6v6H9z"/>',
+  sparkle: '<path d="M12 3v4M12 17v4M3 12h4M17 12h4M5.6 5.6l2.8 2.8M15.6 15.6l2.8 2.8M18.4 5.6l-2.8 2.8M8.4 15.6l-2.8 2.8"/>',
+  external: '<path d="M14 4h6v6M20 4 10 14M6 4H5a1 1 0 0 0-1 1v14a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-1"/>',
+  inbox: '<path d="M4 12h4l2 3h4l2-3h4"/><path d="M5.4 5H18.6L21 12v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-6z"/>',
+  search: '<circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/>',
+  clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l4 2"/>',
+};
+const STATUS_ICON = { confirmed: "check", false_positive: "x", not_applicable: "minus", needs_review: "alert" };
+
+// small inline-icon helper (cosmetic only, additive — not used by any pre-existing wiring)
+function svg(inner, size) {
+  const s = size || 13;
+  const wrap = document.createElement("span");
+  wrap.style.display = "inline-flex";
+  wrap.innerHTML = '<svg width="' + s + '" height="' + s + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + inner + '</svg>';
+  return wrap.firstChild;
+}
+function icon(name, size) { return svg(ICONS[name] || ICONS.dot, size); }
 
 let current = null; // {slug, ts}
 
@@ -1107,7 +1546,9 @@ async function api(path, opts) {
 
 function toast(msg, isErr) {
   const el = document.getElementById("toast");
-  el.textContent = msg;
+  el.textContent = "";
+  el.appendChild(icon(isErr ? "alert" : "check"));
+  el.appendChild(document.createTextNode(" " + msg));
   el.className = "toast show" + (isErr ? " err" : "");
   setTimeout(() => { el.className = "toast"; }, 2600);
 }
@@ -1123,6 +1564,12 @@ function el(tag, props, children) {
   return node;
 }
 
+function emptyState(iconName, title, sub) {
+  const box = el("div", { class: "empty-state" }, [icon(iconName, 20), el("div", { text: title })]);
+  if (sub) box.appendChild(el("div", { class: "muted", text: sub }));
+  return box;
+}
+
 let projects = [];
 let currentProject = null;
 let currentJob = null;
@@ -1132,7 +1579,10 @@ function initScanners(defaults) {
   SCANNERS.filter(s => s !== "all").forEach(s => {
     const input = el("input", { type: "checkbox", value: s });
     input.checked = (defaults || ["nmap", "nuclei"]).includes(s);
-    box.appendChild(el("label", {}, [input, document.createTextNode(" " + s)]));
+    const chip = el("label", { class: "chip" + (input.checked ? " checked" : "") },
+      [input, el("span", { class: "dot" }), document.createTextNode(s)]);
+    input.addEventListener("change", () => chip.classList.toggle("checked", input.checked));
+    box.appendChild(chip);
   });
 }
 
@@ -1143,29 +1593,56 @@ function selectProject(project) {
   document.getElementById("aiLimit").value = project.ai_analysis_limit || 25;
   document.getElementById("authorized").checked = false;
   initScanners(project.default_scanners);
-  document.getElementById("scanHeader").textContent = project.name + " · " + project.target;
+  document.querySelectorAll(".site").forEach(n => n.classList.remove("active-project"));
+  const activeSite = document.querySelector('.site[data-project="' + project.project_id + '"]');
+  if (activeSite) activeSite.classList.add("active-project");
+  const header = document.getElementById("scanHeader");
+  header.textContent = "";
+  header.appendChild(el("div", { class: "title-row" }, [
+    el("strong", { text: project.name }),
+    el("span", { class: "muted asset", text: project.target }),
+  ]));
 }
 
 async function loadProjects() {
   const box = document.getElementById("projects");
   box.textContent = "";
+  box.appendChild(el("div", { class: "loading-state" }, [icon("clock", 16), document.createTextNode("Loading projects…")]));
   let data;
   try { data = await api("/api/projects"); }
-  catch (e) { box.appendChild(el("div", { class: "muted", text: "Error: " + e.message })); return; }
+  catch (e) {
+    box.textContent = "";
+    box.appendChild(emptyState("alert", "Error: " + e.message));
+    return;
+  }
+  box.textContent = "";
   projects = data.projects;
   const select = document.getElementById("projectSelect");
   select.innerHTML = '<option value="">Select project…</option>';
-  if (!projects.length) { box.appendChild(el("div", { class: "muted", text: "No projects yet." })); return; }
+  if (!projects.length) {
+    box.appendChild(emptyState("inbox", "No projects yet.", "Create one to start scanning."));
+    return;
+  }
   projects.forEach(project => {
     select.appendChild(el("option", { value: project.project_id, text: project.name }));
-    const wrap = el("div", { class: "site" });
-    const name = el("div", { class: "site-name", text: project.name });
+    const wrap = el("div", { class: "site", "data-project": project.project_id });
+    const name = el("div", { class: "site-name" }, [
+      icon("target"),
+      el("span", { text: project.name }),
+      el("span", { class: "target", text: project.target }),
+    ]);
     name.addEventListener("click", () => selectProject(project)); wrap.appendChild(name);
+    const scanList = el("div", { class: "scan-list" });
     (project.runs || []).forEach(scan => {
-      const row = el("div", { class: "scan", text: scan.ts + "  ·  " + scan.artifact.replace(".json", "") });
+      const row = el("div", { class: "scan" }, [
+        icon("clock"),
+        el("span", { class: "ts", text: scan.ts }),
+        el("span", { text: scan.artifact.replace(".json", "") }),
+      ]);
       row.addEventListener("click", () => { selectProject(project); selectScan(project.slug, scan.ts, row); });
-      wrap.appendChild(row);
+      scanList.appendChild(row);
     });
+    if ((project.runs || []).length) wrap.appendChild(scanList);
     box.appendChild(wrap);
   });
 }
@@ -1176,21 +1653,37 @@ async function selectScan(slug, ts, row) {
   current = { slug, ts };
   const header = document.getElementById("scanHeader");
   const box = document.getElementById("findings");
-  header.textContent = "Loading…";
+  header.textContent = "";
+  header.appendChild(el("div", { class: "loading-state" }, [document.createTextNode("Loading scan…")]));
   box.textContent = "";
   let data;
   try { data = await api("/api/scan?slug=" + encodeURIComponent(slug) + "&ts=" + encodeURIComponent(ts)); }
-  catch (e) { header.textContent = "Error: " + e.message; return; }
+  catch (e) {
+    header.textContent = "";
+    header.appendChild(emptyState("alert", "Error: " + e.message));
+    return;
+  }
   header.textContent = "";
-  header.appendChild(el("div", {}, [
+  header.appendChild(el("div", { class: "title-row" }, [
     el("strong", { text: data.target || slug }),
-    el("span", { class: "muted", text: "  ·  " + ts + "  ·  " + data.findings.length + " findings" })
+    el("span", { class: "muted", text: ts + "  ·  " + data.findings.length + " findings" })
   ]));
   const dashboard = document.getElementById("dashboard"); dashboard.textContent = "";
   const summary = data.summary || {};
-  const metrics = [["Findings", summary.total_findings || data.findings.length], ["AI analyzed", (data.ai_analysis_summary || {}).analyzed_count || 0], ["AI needs review", (data.ai_analysis_summary || {}).needs_review_count || 0], ["Priority disagreements", (data.ai_analysis_summary || {}).priority_disagreement_count || 0]];
+  const aiSummary = data.ai_analysis_summary || {};
+  const metrics = [
+    ["target", "Findings", summary.total_findings || data.findings.length],
+    ["bot", "AI analyzed", aiSummary.analyzed_count || 0],
+    ["alert", "AI needs review", aiSummary.needs_review_count || 0],
+    ["scale", "Priority disagreements", aiSummary.priority_disagreement_count || 0],
+  ];
   const grid = el("div", { class: "summary-grid" });
-  metrics.forEach(m => grid.appendChild(el("div", { class: "metric" }, [el("strong", { text: String(m[1]) }), el("span", { class: "muted", text: m[0] })])));
+  metrics.forEach(m => {
+    const card = el("div", { class: "metric" });
+    card.appendChild(el("div", { class: "metric-icon" }, [icon(m[0])]));
+    card.appendChild(el("div", {}, [el("strong", { text: String(m[2]) }), el("span", { text: m[1] })]));
+    grid.appendChild(card);
+  });
   dashboard.appendChild(grid);
   const distributions = el("div", { class: "distribution" });
   [["Severity", summary.by_severity || {}], ["Deterministic priority", summary.by_priority || {}]].forEach(group => {
@@ -1201,14 +1694,16 @@ async function selectScan(slug, ts, row) {
     values.forEach(item => {
       const fill = el("div", { class: "distribution-fill", style: "width:" + Math.round(Number(item[1]) * 100 / max) + "%" });
       panel.appendChild(el("div", { class: "distribution-row" }, [
-        el("span", { text: item[0] }), el("div", { class: "distribution-track" }, [fill]), el("span", { text: String(item[1]) })
+        el("span", { class: "dlabel", text: item[0] }), el("div", { class: "distribution-track" }, [fill]), el("span", { class: "dval", text: String(item[1]) })
       ]));
     });
     distributions.appendChild(panel);
   });
   dashboard.appendChild(distributions);
   if (data.report_available && currentProject) {
-    const reportBtn = el("button", { text: "Open full report" });
+    const reportBtn = el("button", { class: "secondary" }, [
+      icon("external"), document.createTextNode(" Open full report"),
+    ]);
     reportBtn.addEventListener("click", async () => {
       try {
         const res = await fetch("/api/projects/" + encodeURIComponent(currentProject.project_id) + "/runs/" + encodeURIComponent(ts) + "/report", { headers: { "X-Triage-Token": TOKEN } });
@@ -1218,52 +1713,65 @@ async function selectScan(slug, ts, row) {
     });
     dashboard.appendChild(reportBtn);
   }
-  if (!data.findings.length) { box.appendChild(el("div", { class: "muted", text: "No findings in this scan." })); return; }
+  if (!data.findings.length) {
+    box.appendChild(emptyState("search", "No findings in this scan."));
+    return;
+  }
+  box.appendChild(el("h3", { class: "section-title", text: "Findings" }));
   data.findings.forEach(f => box.appendChild(renderFinding(f)));
 }
 
 function renderFinding(f) {
-  const card = el("div", { class: "finding" });
+  const card = el("div", { class: "finding sev-border-" + f.severity });
   const top = el("div", { class: "finding-top" }, [
     el("span", { class: "badge sev-" + f.severity, text: f.severity.toUpperCase() }),
     el("span", { class: "finding-name", text: f.vulnerability_name }),
   ]);
-  if (f.priority) top.appendChild(el("span", { class: "badge", text: f.priority }));
-  if (f.ai_priority && f.ai_priority.recommended_priority) top.appendChild(el("span", { class: "badge", text: "AI " + f.ai_priority.recommended_priority }));
+  if (f.priority) top.appendChild(el("span", { class: "badge neutral", text: f.priority }));
+  if (f.ai_priority && f.ai_priority.recommended_priority) {
+    top.appendChild(el("span", { class: "badge ai" }, [icon("sparkle"), document.createTextNode(" AI " + f.ai_priority.recommended_priority)]));
+  }
   card.appendChild(top);
-  if (f.asset_id) card.appendChild(el("div", { class: "asset", text: f.asset_id }));
+  if (f.asset_id) card.appendChild(el("div", { class: "asset" }, [icon("asset"), document.createTextNode(" " + f.asset_id)]));
 
   const nowLine = el("div", { class: "triage-now" });
   function paintNow(t) {
     nowLine.textContent = "";
     if (t && t.status) {
+      nowLine.appendChild(icon(STATUS_ICON[t.status] || "dot"));
       nowLine.appendChild(el("span", { class: "t-" + t.status,
-        text: "Triage: " + (STATUS_LABELS[t.status] || t.status) + (t.scope === "site_vuln" ? " (site-wide)" : "") }));
+        text: (STATUS_LABELS[t.status] || t.status) + (t.scope === "site_vuln" ? " (site-wide)" : "") }));
       if (t.comment) nowLine.appendChild(el("span", { class: "muted", text: "  — " + t.comment }));
     } else {
+      nowLine.appendChild(icon("dot"));
       nowLine.appendChild(el("span", { class: "muted", text: "Untriaged" }));
     }
   }
   paintNow(f.triage);
   card.appendChild(nowLine);
-  if (f.ai_applicability) card.appendChild(el("div", { class: "muted", text: "AI advisory: " + f.ai_applicability }));
+  if (f.ai_applicability) card.appendChild(el("div", { class: "ai-line" }, [el("b", { text: "AI advisory: " }), document.createTextNode(f.ai_applicability)]));
   if (f.ai_summary) {
-    card.appendChild(el("p", { text: f.ai_summary.description || "" }));
-    card.appendChild(el("div", { class: "muted", text: "Business impact: " + (f.ai_summary.business_impact || "") }));
+    card.appendChild(el("p", { class: "ai-desc", text: f.ai_summary.description || "" }));
+    card.appendChild(el("div", { class: "ai-line" }, [el("b", { text: "Business impact: " }), document.createTextNode(f.ai_summary.business_impact || "")]));
   }
 
   const statusSel = el("select");
   STATUSES.forEach(s => statusSel.appendChild(el("option", { value: s, text: STATUS_LABELS[s] || s })));
   if (f.triage && f.triage.status) statusSel.value = f.triage.status;
+  const statusField = el("label", { class: "field" }, [el("span", { text: "Status" }), statusSel]);
+
   const scopeSel = el("select");
   SCOPES.forEach(s => {
     if (s === "site_vuln" && !f.reattachable) return;
     scopeSel.appendChild(el("option", { value: s, text: s === "finding" ? "This finding" : "This vuln, site-wide" }));
   });
+  const scopeField = el("label", { class: "field" }, [el("span", { text: "Scope" }), scopeSel]);
+
   const comment = el("textarea", { placeholder: "Optional comment (why FP / not applicable)…" });
   if (f.triage && f.triage.comment) comment.value = f.triage.comment;
-  const saveBtn = el("button", { text: "Save" });
+  const commentField = el("label", { class: "field grow" }, [el("span", { text: "Comment" }), comment]);
 
+  const saveBtn = el("button", {}, [icon("check"), document.createTextNode(" Save")]);
   saveBtn.addEventListener("click", async () => {
     saveBtn.disabled = true;
     try {
@@ -1279,11 +1787,11 @@ function renderFinding(f) {
     finally { saveBtn.disabled = false; }
   });
 
-  if (scopeSel.options.length) {
-    card.appendChild(el("div", { class: "controls" }, [statusSel, scopeSel, comment, saveBtn]));
-  } else {
-    card.appendChild(el("div", { class: "controls" }, [statusSel, comment, saveBtn]));
-  }
+  const controls = el("div", { class: "controls" }, [statusField]);
+  if (scopeSel.options.length) controls.appendChild(scopeField);
+  controls.appendChild(commentField);
+  controls.appendChild(el("div", { class: "save-row" }, [saveBtn]));
+  card.appendChild(controls);
   return card;
 }
 
@@ -1294,10 +1802,11 @@ async function runScan() {
   if (!scanners.length) { toast("Select at least one scanner.", true); return; }
   if (!document.getElementById("authorized").checked) { toast("Confirm scan authorization first.", true); return; }
   const btn = document.getElementById("runBtn");
+  const term = document.getElementById("jobterm");
   const logBox = document.getElementById("joblog");
   btn.disabled = true;
-  logBox.style.display = "block";
-  logBox.textContent = "Starting scan…\\n";
+  term.classList.add("show");
+  logBox.textContent = "Starting scan…\n";
   let job;
   try {
     job = await api("/api/projects/" + encodeURIComponent(currentProject.project_id) + "/scan", { method: "POST", headers: { "Content-Type": "application/json" },
@@ -1309,7 +1818,7 @@ async function runScan() {
     let info;
     try { info = await api("/api/jobs/" + encodeURIComponent(job.job_id)); }
     catch (e) { return; }
-    logBox.textContent = info.log.join("\\n");
+    logBox.textContent = info.log.join("\n");
     logBox.scrollTop = logBox.scrollHeight;
     if (info.phase === "awaiting_context_review" && info.context_draft && !document.getElementById("contextModal").classList.contains("show")) showContextReview(info.context_draft);
     if (info.status !== "running") {
@@ -1326,7 +1835,7 @@ function boolValue(id) { const v = document.getElementById(id).value; return v =
 function showContextReview(draft) {
   const analysis = draft.analysis || {}; const risk = analysis.risk_context || {};
   document.getElementById("contextDescription").value = analysis.site_description || "";
-  document.getElementById("contextProcesses").value = (analysis.business_processes || []).join("\\n");
+  document.getElementById("contextProcesses").value = (analysis.business_processes || []).join("\n");
   document.getElementById("contextCriticality").value = risk.asset_criticality || "unknown";
   document.getElementById("contextEnvironment").value = risk.environment || "unknown";
   document.getElementById("contextSensitive").value = risk.sensitive_data == null ? "unknown" : String(risk.sensitive_data);
@@ -1349,7 +1858,7 @@ async function submitContext(action) {
       const available = [].concat(draft.pages || [], draft.osint || []).map(item => item.id).filter(Boolean);
       const cited = (proposed.evidence_ids || []).filter(id => available.includes(id));
       body.description = document.getElementById("contextDescription").value;
-      body.business_processes = document.getElementById("contextProcesses").value.split("\\n").map(s => s.trim()).filter(Boolean);
+      body.business_processes = document.getElementById("contextProcesses").value.split("\n").map(s => s.trim()).filter(Boolean);
       body.risk_context = {
         asset_criticality: document.getElementById("contextCriticality").value,
         environment: document.getElementById("contextEnvironment").value,
